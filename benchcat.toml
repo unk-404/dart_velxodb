@@ -58,6 +58,14 @@ value = "value * 100 * 1024 / 1000000"
 group = "VXS format"
 
 [[row]]
+id = "serde project.fields"
+label = "Project all 5 fields"
+note = "one scan, zero-copy strings"
+unit = "ns/op"
+value = "1000000000 / (value * 100)"
+group = "VXS format"
+
+[[row]]
 id = "serde decode.getters"
 label = "Read 3 fields via getters"
 note = "O(n^2) convenience path"

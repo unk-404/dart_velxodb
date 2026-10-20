@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:blit/blit.dart';
 
 import 'crc32c.dart';
+import 'schema.dart';
 import 'string_view.dart';
 import 'vxs.dart';
 
@@ -282,6 +283,203 @@ final class DocView {
     }
     return null;
   }
+
+  /// Reads several fields in a single scan, in [fieldIds] order.
+  ///
+  /// Strings come back as [StringView] (zero-copy), bytes and lists as [Bytes],
+  /// numbers as `int`/`double`/`bool`. Missing fields are `null`. This avoids
+  /// the O(fields x requested) cost of calling the individual getters.
+  List<Object?> project(VxsSchema schema, List<int> fieldIds) {
+    final out = List<Object?>.filled(fieldIds.length, null);
+    if (fieldIds.isEmpty) return out;
+    final cursor = this.cursor();
+    while (cursor.next()) {
+      final index = fieldIds.indexOf(cursor.fieldId);
+      if (index < 0) continue;
+      final field = schema.fieldById(cursor.fieldId);
+      if (field == null || field.type.wireType != cursor.wireType) continue;
+      out[index] = _valueOf(field.type, cursor);
+    }
+    return out;
+  }
+
+  /// Checks the document against [schema].
+  ///
+  /// Returns every problem found instead of throwing, so a migration or an
+  /// import tool can report all of them at once. Nothing is allocated for a
+  /// clean document beyond the (empty) issue list.
+  List<VxsValidationIssue> validate(
+    VxsSchema schema, {
+    bool allowUnknown = true,
+    int maxDepth = 8,
+  }) {
+    final issues = <VxsValidationIssue>[];
+    _validateInto(schema, issues, allowUnknown: allowUnknown, depth: maxDepth);
+    return issues;
+  }
+
+  /// Throws [VxsFormatException] on the first validation issue.
+  void validateOrThrow(
+    VxsSchema schema, {
+    bool allowUnknown = true,
+    int maxDepth = 8,
+  }) {
+    final issues = validate(
+      schema,
+      allowUnknown: allowUnknown,
+      maxDepth: maxDepth,
+    );
+    if (issues.isNotEmpty) {
+      throw VxsFormatException(issues.first.toString(), offset: issues.first.offset);
+    }
+  }
+
+  void _validateInto(
+    VxsSchema schema,
+    List<VxsValidationIssue> issues, {
+    required bool allowUnknown,
+    required int depth,
+  }) {
+    final cursor = this.cursor();
+    while (cursor.next()) {
+      final field = schema.fieldById(cursor.fieldId);
+      if (field == null) {
+        if (!allowUnknown) {
+          issues.add(
+            VxsValidationIssue(
+              cursor.fieldId,
+              'unknown field',
+              cursor.entryOffset,
+            ),
+          );
+        }
+        continue;
+      }
+      if (cursor.wireType != field.type.wireType) {
+        issues.add(
+          VxsValidationIssue(
+            cursor.fieldId,
+            'wire type ${cursor.wireType} does not match ${field.type.name}',
+            cursor.entryOffset,
+          ),
+        );
+        continue;
+      }
+      switch (field.type) {
+        case VxsType.intList:
+          _validateList(cursor, isString: false, issues: issues);
+        case VxsType.stringList:
+          _validateList(cursor, isString: true, issues: issues);
+        case VxsType.doc:
+          if (depth <= 0) {
+            issues.add(
+              VxsValidationIssue(
+                cursor.fieldId,
+                'nested documents exceed the depth limit',
+                cursor.entryOffset,
+              ),
+            );
+          } else {
+            try {
+              final nested = DocView.parse(
+                buffer,
+                cursor.valueOffset,
+                cursor.valueLength,
+              );
+              if (nested.byteEnd != cursor.valueOffset + cursor.valueLength) {
+                issues.add(
+                  VxsValidationIssue(
+                    cursor.fieldId,
+                    'nested document has trailing bytes',
+                    cursor.valueOffset,
+                  ),
+                );
+              }
+              nested._validateInto(
+                schema,
+                issues,
+                allowUnknown: allowUnknown,
+                depth: depth - 1,
+              );
+            } on VxsFormatException catch (error) {
+              issues.add(
+                VxsValidationIssue(
+                  cursor.fieldId,
+                  'nested document: ${error.message}',
+                  cursor.valueOffset,
+                ),
+              );
+            }
+          }
+        default:
+          break;
+      }
+    }
+  }
+
+  void _validateList(
+    DocCursor cursor, {
+    required bool isString,
+    required List<VxsValidationIssue> issues,
+  }) {
+    final end = cursor.valueOffset + cursor.valueLength;
+    var pos = cursor.valueOffset;
+    try {
+      final count = VxsVarint.decode(buffer, pos, end);
+      pos = count.next;
+      for (var i = 0; i < count.value; i++) {
+        if (isString) {
+          final length = VxsVarint.decode(buffer, pos, end);
+          pos = length.next + length.value;
+          if (pos > end) {
+            issues.add(
+              VxsValidationIssue(
+                cursor.fieldId,
+                'list element $i overruns the field',
+                cursor.valueOffset,
+              ),
+            );
+            return;
+          }
+        } else {
+          pos = VxsVarint.decode(buffer, pos, end).next;
+        }
+      }
+      if (pos != end) {
+        issues.add(
+          VxsValidationIssue(
+            cursor.fieldId,
+            'list has ${end - pos} trailing bytes',
+            pos,
+          ),
+        );
+      }
+    } on VxsFormatException catch (error) {
+      issues.add(
+        VxsValidationIssue(cursor.fieldId, 'list: ${error.message}', pos),
+      );
+    }
+  }
+
+  Object? _valueOf(VxsType type, DocCursor cursor) => switch (type) {
+    VxsType.boolean => cursor.intValue != 0,
+    VxsType.int32 || VxsType.int64 => VxsVarint.unzigzag(cursor.intValue),
+    VxsType.float32 => _data.getFloat32(cursor.valueOffset, Endian.little),
+    VxsType.float64 => _data.getFloat64(cursor.valueOffset, Endian.little),
+    VxsType.string => StringView(
+      buffer,
+      cursor.valueOffset,
+      cursor.valueOffset + cursor.valueLength,
+    ),
+    VxsType.bytes ||
+    VxsType.stringList ||
+    VxsType.intList ||
+    VxsType.doc => Bytes.view(
+      buffer,
+      cursor.valueOffset,
+      cursor.valueLength,
+    ),
+  };
 
   Uint8List _slice(int start, int length) =>
       Uint8List.sublistView(buffer, start, start + length);

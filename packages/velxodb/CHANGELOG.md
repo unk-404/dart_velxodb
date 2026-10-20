@@ -17,3 +17,8 @@
   allocation (~165 ns per 130 B document on AOT).
 - Browser test suite (`dart test -p chrome`): JS integer semantics, handwritten
   UTF-8, CRC vectors and the batch writer all run in Chrome in CI.
+- `DocView.validate(schema)` reports every structural problem at once;
+  `DocView.project(schema, ids)` reads several fields in one scan (~3x faster
+  than calling the individual getters).
+- Structured fuzzing: mutated-but-valid documents only ever raise
+  `VxsFormatException`.

@@ -1,5 +1,23 @@
 import 'dart:typed_data';
 
+/// One problem found while validating a document against a schema.
+final class VxsValidationIssue {
+  /// Creates an issue for [fieldId] at byte [offset].
+  const VxsValidationIssue(this.fieldId, this.message, this.offset);
+
+  /// Field the problem was found on.
+  final int fieldId;
+
+  /// Human readable description.
+  final String message;
+
+  /// Byte offset inside the document.
+  final int offset;
+
+  @override
+  String toString() => 'field $fieldId: $message (at byte $offset)';
+}
+
 /// Thrown when a byte range is not a valid [VXS] document.
 ///
 /// A dedicated type matters: the parser is called on untrusted bytes, so

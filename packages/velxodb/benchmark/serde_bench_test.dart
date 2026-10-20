@@ -76,6 +76,26 @@ void main() {
       }
     });
 
+    final schema = VxsSchema(
+      id: 1,
+      version: 1,
+      fields: const <VxsField>[
+        VxsField(1, 'messageId', VxsType.string),
+        VxsField(2, 'conversationId', VxsType.string),
+        VxsField(3, 'senderId', VxsType.int64),
+        VxsField(4, 'createdAt', VxsType.int64),
+        VxsField(5, 'text', VxsType.string),
+      ],
+    );
+    const projection = <int>[1, 2, 3, 4, 5];
+
+    benchmark('project.fields', () {
+      for (var i = 0; i < batch; i++) {
+        final values = view.project(schema, projection);
+        sink = values.length;
+      }
+    });
+
     benchmark('decode.singleScan', () {
       var acc = 0;
       for (var i = 0; i < batch; i++) {
