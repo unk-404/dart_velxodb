@@ -1,7 +1,5 @@
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
-
 import '../serde/crc32c.dart';
 import '../serde/vxs.dart';
 import 'file.dart';
@@ -73,24 +71,41 @@ final class WalOp {
 abstract final class WalBatch {
   /// Encodes [ops] into a frame payload.
   static Uint8List encode(List<WalOp> ops) {
-    final writer = BytesMut(64);
-    _writeVarint(writer, ops.length);
+    final out = Uint8List(encodedSize(ops));
+    encodeInto(out, 0, ops);
+    return out;
+  }
+
+  /// Bytes needed to encode [ops].
+  static int encodedSize(List<WalOp> ops) {
+    var size = _varintSize(ops.length);
     for (final op in ops) {
+      size += 1 + _varintSize(op.key.length) + op.key.length;
       final value = op.value;
-      // One reserve for the whole operation: key and value can be large, and
-      // putSliceUnchecked requires capacity up front.
-      writer.reserve(20 + op.key.length + (value?.length ?? 0));
-      writer.putUint8Unchecked(op.kind.code);
-      _writeVarint(writer, op.key.length);
-      writer.putSliceUnchecked(op.key);
+      final length = value?.length ?? 0;
+      size += _varintSize(length) + length;
+    }
+    return size;
+  }
+
+  /// Encodes [ops] into [out] starting at [offset]; returns the end offset.
+  static int encodeInto(Uint8List out, int offset, List<WalOp> ops) {
+    var pos = _writeVarint(out, offset, ops.length);
+    for (final op in ops) {
+      out[pos++] = op.kind.code;
+      pos = _writeVarint(out, pos, op.key.length);
+      out.setRange(pos, pos + op.key.length, op.key);
+      pos += op.key.length;
+      final value = op.value;
       if (value == null) {
-        _writeVarint(writer, 0);
+        pos = _writeVarint(out, pos, 0);
       } else {
-        _writeVarint(writer, value.length);
-        writer.putSliceUnchecked(value);
+        pos = _writeVarint(out, pos, value.length);
+        out.setRange(pos, pos + value.length, value);
+        pos += value.length;
       }
     }
-    return writer.freeze().asUint8List();
+    return pos;
   }
 
   /// Decodes a frame payload, visiting operations in order.
@@ -142,75 +157,164 @@ abstract final class WalBatch {
     }
   }
 
-  static void _writeVarint(BytesMut writer, int value) {
-    writer.reserve(10);
-    var remaining = value;
-    while (remaining >= 0x80) {
-      writer.putUint8Unchecked((remaining % 0x80) | 0x80);
+  static int _varintSize(int value) {
+    var size = 1;
+    var remaining = value ~/ 0x80;
+    while (remaining != 0) {
+      size++;
       remaining ~/= 0x80;
     }
-    writer.putUint8Unchecked(remaining);
+    return size;
+  }
+
+  /// Bytes needed for one operation, excluding the batch count.
+  static int opSize(Uint8List key, Uint8List? value) {
+    final valueLength = value?.length ?? 0;
+    return 1 +
+        _varintSize(key.length) +
+        key.length +
+        _varintSize(valueLength) +
+        valueLength;
+  }
+
+  /// Writes one operation and returns the end offset.
+  static int writeOp(
+    Uint8List out,
+    int offset,
+    WalOpKind kind,
+    Uint8List key,
+    Uint8List? value,
+  ) {
+    var pos = offset;
+    out[pos++] = kind.code;
+    pos = _writeVarint(out, pos, key.length);
+    out.setRange(pos, pos + key.length, key);
+    pos += key.length;
+    if (value == null) {
+      return _writeVarint(out, pos, 0);
+    }
+    pos = _writeVarint(out, pos, value.length);
+    out.setRange(pos, pos + value.length, value);
+    return pos + value.length;
+  }
+
+  static int _writeVarint(Uint8List out, int offset, int value) {
+    var pos = offset;
+    var remaining = value;
+    while (remaining >= 0x80) {
+      out[pos++] = (remaining % 0x80) | 0x80;
+      remaining ~/= 0x80;
+    }
+    out[pos++] = remaining;
+    return pos;
   }
 }
 
-/// Append-only write-ahead log over a [StorageFile].
+/// Append-only write-ahead log over a [SyncStorageFile].
 ///
-/// The log knows nothing about memtables or segments: [replay] hands raw frame
-/// payloads to a callback and truncates any torn tail it finds.
+/// The log knows nothing about memtables or segments: [replaySync] hands raw
+/// frame payloads to a callback and truncates any torn tail it finds.
+///
+/// The core is synchronous because the engine's hot path is: three nested
+/// `await`s per insert used to cost more than the insert itself. Async wrappers
+/// exist for callers that already live in a `Future` world.
 final class Wal {
   /// Wraps [file] as a write-ahead log.
   Wal(this.file);
 
   /// Backing file.
-  final StorageFile file;
+  final SyncStorageFile file;
 
   Uint8List _scratch = Uint8List(1024);
 
   /// Appends one frame. The frame is not durable until [sync].
-  Future<void> append(Uint8List payload) async {
-    final total = walHeaderSize + payload.length;
-    if (_scratch.length < total) {
-      var capacity = _scratch.length * 2;
-      while (capacity < total) {
-        capacity *= 2;
-      }
-      _scratch = Uint8List(capacity);
-    }
-    VxsLe.w32(_scratch, 0, payload.length);
-    VxsLe.w32(_scratch, 4, VxsCrc32c.compute(payload));
-    _scratch.setRange(walHeaderSize, total, payload);
-    await file.append(Uint8List.sublistView(_scratch, 0, total));
+  void appendSync(Uint8List payload) {
+    _ensureScratch(walHeaderSize + payload.length);
+    _scratch.setRange(walHeaderSize, walHeaderSize + payload.length, payload);
+    _commitSync(walHeaderSize + payload.length);
   }
 
   /// Appends [ops] as one batch frame.
-  Future<void> appendBatch(List<WalOp> ops) => append(WalBatch.encode(ops));
+  ///
+  /// Encodes straight into the frame scratch: one allocation-free batch, one
+  /// checksum pass and one file append.
+  void appendBatchSync(List<WalOp> ops) {
+    final payloadSize = WalBatch.encodedSize(ops);
+    _ensureScratch(walHeaderSize + payloadSize);
+    final end = WalBatch.encodeInto(_scratch, walHeaderSize, ops);
+    _commitSync(end);
+  }
+
+  /// Async facade over [appendSync].
+  Future<void> append(Uint8List payload) async => appendSync(payload);
+
+  /// Async facade over [appendBatchSync].
+  Future<void> appendBatch(List<WalOp> ops) async => appendBatchSync(ops);
+
+  /// Appends a single put without building a `WalOp` or a list.
+  void appendPutSync(Uint8List key, Uint8List value) =>
+      _appendSingleSync(WalOpKind.put, key, value);
+
+  /// Appends a single delete without building a `WalOp` or a list.
+  void appendDeleteSync(Uint8List key) =>
+      _appendSingleSync(WalOpKind.delete, key, null);
+
+  void _appendSingleSync(WalOpKind kind, Uint8List key, Uint8List? value) {
+    final payloadSize = 1 + WalBatch.opSize(key, value);
+    _ensureScratch(walHeaderSize + payloadSize);
+    _scratch[walHeaderSize] = 1; // one operation
+    WalBatch.writeOp(_scratch, walHeaderSize + 1, kind, key, value);
+    _commitSync(walHeaderSize + payloadSize);
+  }
 
   /// Makes every appended frame durable.
-  Future<void> sync() => file.flush();
+  void syncNow() => file.flushSync();
+
+  /// Async facade over [syncNow].
+  Future<void> sync() async => syncNow();
+
+  void _commitSync(int end) {
+    VxsLe.w32(_scratch, 0, end - walHeaderSize);
+    VxsLe.w32(_scratch, 4, VxsCrc32c.compute(_scratch, walHeaderSize, end));
+    file.appendSync(Uint8List.sublistView(_scratch, 0, end));
+  }
+
+  void _ensureScratch(int needed) {
+    if (_scratch.length >= needed) return;
+    var capacity = _scratch.length * 2;
+    while (capacity < needed) {
+      capacity *= 2;
+    }
+    _scratch = Uint8List(capacity);
+  }
 
   /// Replays every intact frame and truncates a torn tail.
   ///
   /// Returns the offset of the first invalid byte (the new file length). Frames
   /// after a damaged one are discarded: a torn write means everything after it
   /// is untrustworthy.
-  Future<int> replay(void Function(Uint8List payload) apply) async {
-    final length = await file.length;
+  int replaySync(void Function(Uint8List payload) apply) {
+    final length = file.lengthSync;
     var offset = 0;
     var validEnd = 0;
     while (offset + walHeaderSize <= length) {
-      final header = await file.readAt(offset, walHeaderSize);
+      final header = file.readAtSync(offset, walHeaderSize);
       final payloadLength = VxsLe.u32(header, 0);
       final checksum = VxsLe.u32(header, 4);
       if (offset + walHeaderSize + payloadLength > length) break;
-      final payload = await file.readAt(offset + walHeaderSize, payloadLength);
+      final payload = file.readAtSync(offset + walHeaderSize, payloadLength);
       if (VxsCrc32c.compute(payload) != checksum) break;
       apply(payload);
       offset += walHeaderSize + payloadLength;
       validEnd = offset;
     }
     if (validEnd < length) {
-      await file.truncate(validEnd);
+      file.truncateSync(validEnd);
     }
     return validEnd;
   }
+
+  /// Async facade over [replaySync].
+  Future<int> replay(void Function(Uint8List payload) apply) async =>
+      replaySync(apply);
 }

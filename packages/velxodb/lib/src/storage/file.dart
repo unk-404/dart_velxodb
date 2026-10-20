@@ -28,11 +28,34 @@ abstract interface class StorageFile {
   Future<void> close();
 }
 
-/// In-memory [StorageFile] with the same semantics as a real file.
+/// Synchronous companion used by the local engine core.
+///
+/// The engine's hot path is synchronous on purpose: awaiting three nested
+/// futures per insert costs more than the insert itself. Remote backends
+/// (object stores) get a separate async engine instead of pretending to be a
+/// local file.
+abstract interface class SyncStorageFile {
+  /// Current logical length in bytes.
+  int get lengthSync;
+
+  /// Appends [bytes] at the end of the file.
+  void appendSync(Uint8List bytes);
+
+  /// Reads exactly [length] bytes starting at [offset].
+  Uint8List readAtSync(int offset, int length);
+
+  /// Cuts the file to [length] bytes. Must not extend.
+  void truncateSync(int length);
+
+  /// Makes previously appended bytes durable.
+  void flushSync();
+}
+
+/// In-memory file implementing both the sync and async interfaces.
 ///
 /// Used by tests and by the crash matrix: "power cut" is simulated by copying
 /// the first N bytes into a fresh instance.
-final class MemoryStorageFile implements StorageFile {
+final class MemoryStorageFile implements StorageFile, SyncStorageFile {
   /// Creates a file with room for [capacity] bytes.
   MemoryStorageFile([int capacity = 4096])
     : _data = Uint8List(capacity < 64 ? 64 : capacity);
@@ -41,23 +64,23 @@ final class MemoryStorageFile implements StorageFile {
   int _length = 0;
   bool _closed = false;
 
-  /// Number of times [flush] was called.
+  /// Number of times the file was flushed.
   int flushCount = 0;
 
-  /// Number of bytes appended since creation.
+  /// Number of append calls.
   int appendCount = 0;
 
   /// A read-only view of the current contents.
   Uint8List get bytes => Uint8List.sublistView(_data, 0, _length);
 
   @override
-  Future<int> get length async {
+  int get lengthSync {
     _checkOpen();
     return _length;
   }
 
   @override
-  Future<void> append(Uint8List bytes) async {
+  void appendSync(Uint8List bytes) {
     _checkOpen();
     _ensure(_length + bytes.length);
     _data.setRange(_length, _length + bytes.length, bytes);
@@ -66,7 +89,7 @@ final class MemoryStorageFile implements StorageFile {
   }
 
   @override
-  Future<Uint8List> readAt(int offset, int length) async {
+  Uint8List readAtSync(int offset, int length) {
     _checkOpen();
     if (offset < 0 || length < 0 || offset + length > _length) {
       throw RangeError('read [$offset, ${offset + length}) outside 0..$_length');
@@ -75,7 +98,7 @@ final class MemoryStorageFile implements StorageFile {
   }
 
   @override
-  Future<void> truncate(int length) async {
+  void truncateSync(int length) {
     _checkOpen();
     if (length < 0 || length > _length) {
       throw RangeError.value(length, 'length', 'must be within 0..$_length');
@@ -84,10 +107,26 @@ final class MemoryStorageFile implements StorageFile {
   }
 
   @override
-  Future<void> flush() async {
+  void flushSync() {
     _checkOpen();
     flushCount++;
   }
+
+  @override
+  Future<int> get length async => lengthSync;
+
+  @override
+  Future<void> append(Uint8List bytes) async => appendSync(bytes);
+
+  @override
+  Future<Uint8List> readAt(int offset, int length) async =>
+      readAtSync(offset, length);
+
+  @override
+  Future<void> truncate(int length) async => truncateSync(length);
+
+  @override
+  Future<void> flush() async => flushSync();
 
   @override
   Future<void> close() async {

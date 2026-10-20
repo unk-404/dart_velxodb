@@ -1,4 +1,4 @@
-// Storage-layer benchmarks: block packing and WAL framing.
+// Storage-layer benchmarks: blocks, WAL, memtable and the write path.
 //   dart run benchmark_test --output jsonl benchmark
 import 'dart:typed_data';
 
@@ -38,6 +38,20 @@ void main() {
     ),
   ]);
 
+  final memtable = MemTable(initialEntries: 256);
+  final keys = <Uint8List>[
+    for (var i = 0; i < 64; i++)
+      Uint8List.fromList('key-${i.toString().padLeft(4, '0')}'.codeUnits),
+  ];
+  for (final key in keys) {
+    memtable.put(key, 0, 0, 130);
+  }
+
+  // The engine benchmark swallows WAL bytes so a long run does not turn into
+  // hundreds of megabytes of log.
+  final engine = StorageEngine(walFile: _NullStorageFile());
+  engine.openSync();
+
   group('storage', () {
     benchmark('block.write', () {
       final w = BlockWriter(targetSize: 8 * 1024);
@@ -71,5 +85,58 @@ void main() {
         WalBatch.decode(walPayload, (_, _, _) {});
       }
     });
+
+    benchmark('memtable.get', () {
+      for (var round = 0; round < batch; round++) {
+        for (final key in keys) {
+          sink += memtable.get(key)?.length ?? -1;
+        }
+      }
+    });
+
+    benchmark('memtable.put', () {
+      for (var round = 0; round < batch; round++) {
+        for (var i = 0; i < keys.length; i++) {
+          memtable.put(keys[i], 0, i, 130 + (round & 3));
+        }
+      }
+    });
+
+    benchmark('engine.put', () {
+      for (var round = 0; round < batch; round++) {
+        for (var i = 0; i < keys.length; i++) {
+          engine.putSync(keys[i], doc);
+        }
+      }
+    });
+
+    benchmark('engine.get', () {
+      for (var round = 0; round < batch; round++) {
+        for (var i = 0; i < keys.length; i++) {
+          sink += engine.get(keys[i])?.length ?? -1;
+        }
+      }
+    });
   });
+}
+
+/// Counts bytes but never stores them.
+final class _NullStorageFile implements SyncStorageFile {
+  int _length = 0;
+
+  @override
+  int get lengthSync => _length;
+
+  @override
+  void appendSync(Uint8List bytes) => _length += bytes.length;
+
+  @override
+  Uint8List readAtSync(int offset, int length) =>
+      throw UnsupportedError('null file');
+
+  @override
+  void truncateSync(int length) => _length = length;
+
+  @override
+  void flushSync() {}
 }

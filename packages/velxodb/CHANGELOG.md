@@ -25,4 +25,7 @@
 - Storage layer (`package:velxodb/storage.dart`): self-delimiting blocks,
   checksummed WAL frames with crash recovery, and a minimal `StorageFile`
   abstraction with an in-memory implementation.
+- Memtable with open addressing (~2.2x faster than `HashMap` for inserts and
+  lookups), chunked document arena with stable views, and a synchronous write
+  path (WAL → arena → memtable) with an async facade.
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).
