@@ -43,6 +43,37 @@ value = "1000000000 / (value * 100)"
 group = "VXS format"
 
 [[row]]
+id = "storage block.write"
+label = "Pack a block (20 docs)"
+note = "includes block CRC"
+unit = "MB/s"
+value = "value * 100 * 20 * 130 / 1000000"
+group = "Storage"
+
+[[row]]
+id = "storage block.read"
+label = "Scan a block"
+note = "20 documents"
+unit = "Mdocs/s"
+value = "value * 100 * 20 / 1000000"
+group = "Storage"
+
+[[row]]
+id = "storage wal.frame"
+label = "Encode a WAL frame"
+note = "1 doc + CRC32C"
+unit = "Kops/s"
+value = "value * 100 / 1000"
+group = "Storage"
+
+[[row]]
+id = "storage wal.batch"
+label = "Decode a WAL batch"
+unit = "Kops/s"
+value = "value * 100 / 1000"
+group = "Storage"
+
+[[row]]
 id = "serde view.compare"
 label = "Compare 26 B keys (zero-copy)"
 note = "StringView vs String"

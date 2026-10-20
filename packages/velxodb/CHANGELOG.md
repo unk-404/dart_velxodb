@@ -22,3 +22,7 @@
   than calling the individual getters).
 - Structured fuzzing: mutated-but-valid documents only ever raise
   `VxsFormatException`.
+- Storage layer (`package:velxodb/storage.dart`): self-delimiting blocks,
+  checksummed WAL frames with crash recovery, and a minimal `StorageFile`
+  abstraction with an in-memory implementation.
+- CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).
