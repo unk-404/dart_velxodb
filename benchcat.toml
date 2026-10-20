@@ -1,0 +1,8 @@
+# Rendered by benchcat (https://github.com/unk-404/benchcat).
+[render]
+title = "velxodb"
+subtitle = "{platform|local} - commit {commit:short|local}"
+footer = "Generated from {rows} rows"
+width = 920
+max_rows = 28
+kaomoji = ""

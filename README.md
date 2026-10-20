@@ -1,39 +1,51 @@
-<!--
-This README describes the package. If you publish this package to pub.dev,
-this README's contents appear on the landing page for your package.
+# velxodb
 
-For information about how to write a good package README, see the guide for
-[writing package pages](https://dart.dev/tools/pub/writing-package-pages).
+An embedded, pure-Dart document database built for very large local datasets.
 
-For general information about developing packages, see the Dart guide for
-[creating packages](https://dart.dev/tools/pub/create-packages)
-and the Flutter guide for
-[developing packages and plugins](https://flutter.dev/to/develop-packages).
--->
+- **Pure Dart** - runs on the VM, dart2js and dart2wasm.
+- **Zero-copy storage** - a self-designed binary format (\VXS\) with field-level
+  random access, no deserialization into maps.
+- **Built for scale** - point lookups over 10^9 documents, indexed retrieval over
+  10^7 documents on a single machine.
+- **Pluggable storage** - a public \ObjectStore\ SPI; local mmap, OPFS and HTTP
+  Range ship in-box, anything else (S3, GCS, your gateway) is a small adapter.
+- **Mongo-style API** - \collection('x').insertOne({...})\, \ind(filter)\,
+  \updateOne\, \ggregate\. Client-side facade, no wire protocol.
+- **Generated codecs** - annotate a Dart class, get a monomorphic codec.
 
-TODO: Put a short description of the package here that helps potential users
-know whether this package might be useful for them.
+## Status
 
-## Features
+Pre-alpha. The workspace, the binary format and the storage engine are being
+built in that order; see the roadmap for what is expected to work when.
 
-TODO: List what your package can do. Maybe include images, gifs, or videos.
+| Milestone | Contents |
+| --- | --- |
+| M1 | local CRUD, crash recovery |
+| M2 | primary/secondary indexes, query planner |
+| M3 | retrieval primitives (inverted / n-gram) |
+| M4 | code generator |
+| M5 | web (OPFS), HTTP backends |
+| M6 | Mongo-style facade |
 
-## Getting started
+## Packages
 
-TODO: List prerequisites and provide or point to information on how to
-start using the package.
+| Package | Purpose |
+| --- | --- |
+| \packages/velxodb\ | engine, format, indexes, public API |
+| \packages/velxodb_generator\ | annotation-driven codecs (planned) |
+| \packages/velxodb_mongo\ | Mongo-style facade (planned) |
 
-## Usage
+## Benchmarks
 
-TODO: Include short and useful examples for package users. Add longer examples
-to `/example` folder.
+Benchmarks use [\enchmark_test\](https://pub.dev/packages/benchmark_test) and are
+rendered to \ssets/benchmarks.svg\ by
+[benchcat](https://github.com/unk-404/benchcat) in CI:
 
-```dart
-const like = 'sample';
-```
+\\\sh
+cd packages/velxodb
+dart run benchmark_test --output jsonl benchmark > ../../bench.jsonl
+\\\
 
-## Additional information
+## License
 
-TODO: Tell users more about the package: where to find more information, how to
-contribute to the package, how to file issues, what response they can expect
-from the package authors, and more.
+MIT.

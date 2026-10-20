@@ -1,0 +1,90 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - name: Resolve workspace
+        run: dart pub get
+      - name: Analyze
+        run: dart analyze --fatal-infos
+      - name: Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in packages/*/; do
+            if [ -d "${dir}test" ]; then
+              echo "::group::dart test ${dir}"
+              dart test -j 1 "${dir}test"
+              echo "::endgroup::"
+            fi
+          done
+
+  web:
+    name: web / ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [js, wasm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - name: Resolve workspace
+        run: dart pub get
+      # Compiling the entry point proves the library graph stays web-safe.
+      - name: Compile ${{ matrix.target }}
+        run: |
+          if [ "${{ matrix.target }}" = "wasm" ]; then
+            dart compile wasm packages/velxodb/example/velxodb_example.dart -o /tmp/smoke.wasm
+          else
+            dart compile js packages/velxodb/example/velxodb_example.dart -o /tmp/smoke.js
+          fi
+
+  bench:
+    name: benchmark
+    needs: [test, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - name: Resolve workspace
+        run: dart pub get
+      - name: Run benchmarks
+        working-directory: packages/velxodb
+        run: dart run benchmark_test --output jsonl benchmark > "$GITHUB_WORKSPACE/bench.jsonl"
+      - name: Render chart
+        uses: unk-404/benchcat@master
+        with:
+          input: bench.jsonl
+          format: benchmark_test
+          out: assets/benchmarks.svg
+          config: benchcat.toml
+      - name: Upload chart
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks-svg
+          path: assets/benchmarks.svg
+          if-no-files-found: error
