@@ -14,5 +14,6 @@ library;
 
 export 'src/serde/builder.dart';
 export 'src/serde/schema.dart';
+export 'src/serde/sink.dart';
 export 'src/serde/view.dart';
 export 'src/serde/vxs.dart';

@@ -13,7 +13,15 @@ kaomoji = ""
 [[row]]
 id = "serde encode.5field"
 label = "Encode a 130 B chat doc"
-note = "5 fields, builder + finish"
+note = "single-doc builder"
+unit = "MB/s"
+value = "value * 100 * 130 / 1000000"
+group = "VXS format"
+
+[[row]]
+id = "serde encode.sink"
+label = "Encode into a batch sink"
+note = "one buffer, no per-doc allocation"
 unit = "MB/s"
 value = "value * 100 * 130 / 1000000"
 group = "VXS format"

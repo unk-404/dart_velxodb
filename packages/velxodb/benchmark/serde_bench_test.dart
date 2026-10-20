@@ -25,11 +25,22 @@ void writeChat(DocBuilder builder) {
     ..putString(5, '在吗？今天下午三点开会，别忘了带材料。');
 }
 
+/// The same message written through the batch path (no per-doc allocation).
+void writeChatSink(DocSink sink) {
+  sink
+    ..putString(1, '01J8Z4K2M3N4P5Q6R7S8T9V0W1')
+    ..putString(2, '01J8Z4K2M3N4P5Q6R7S8T9V0W2')
+    ..putInt(3, 7)
+    ..putInt(4, 1750000000000)
+    ..putString(5, '在吗？今天下午三点开会，别忘了带材料。');
+}
+
 void main() {
   final builder = newBuilder();
   writeChat(builder);
   final encoded = builder.finish();
   final view = DocView.parse(encoded.asUint8List());
+  final docSink = DocSink(capacity: 1 << 16);
 
   group('serde', () {
     benchmark('encode.5field', () {
@@ -39,6 +50,16 @@ void main() {
         writeChat(b);
         sink += b.finish().length;
       }
+    });
+
+    benchmark('encode.sink', () {
+      for (var i = 0; i < batch; i++) {
+        if (docSink.length > (1 << 12)) docSink.reset();
+        docSink.beginDoc(schemaId: 1, schemaVersion: 1);
+        writeChatSink(docSink);
+        docSink.endDoc();
+      }
+      sink += docSink.length;
     });
 
     benchmark('decode.getters', () {
