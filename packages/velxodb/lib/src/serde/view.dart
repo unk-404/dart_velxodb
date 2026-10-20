@@ -3,6 +3,8 @@ import 'dart:typed_data';
 
 import 'package:blit/blit.dart';
 
+import 'crc32c.dart';
+import 'string_view.dart';
 import 'vxs.dart';
 
 /// A read-only, zero-copy view over one encoded VXS document.
@@ -20,15 +22,19 @@ final class DocView {
     this.byteOffset,
     this.bodyStart,
     this.bodyEnd,
+    this.byteEnd,
     this.flags,
     this.schemaId,
     this.schemaVersion,
-  ) : byteEnd = bodyEnd;
+    this.checksum,
+  );
 
   /// Parses and validates the document starting at [offset].
   ///
-  /// [length] lets callers read a document out of a larger buffer (a block, a
-  /// WAL frame); when omitted the document must be the tail of [buffer].
+  /// [length] is the total document size including any checksum trailer; when
+  /// omitted the document is parsed out of [buffer] starting at [offset].
+  /// Checksums are read but not verified; call [verifyChecksum] or use
+  /// [parseVerified] to pay for the extra pass.
   static DocView parse(Uint8List buffer, [int offset = 0, int? length]) {
     final end = length == null ? buffer.length : offset + length;
     if (end > buffer.length || offset < 0 || end < offset) {
@@ -74,17 +80,40 @@ final class DocView {
       );
     }
     if (flags & vxsFlagCrc32c != 0) {
-      throw UnsupportedError('CRC32C trailers are reserved but not implemented');
+      if (bodyEnd + 4 > end) {
+        throw VxsFormatException('missing checksum trailer', offset: bodyEnd);
+      }
+      final stored = VxsLe.u32(buffer, bodyEnd);
+      return DocView._(
+        buffer,
+        offset,
+        bodyStart,
+        bodyEnd,
+        bodyEnd + 4,
+        flags,
+        schemaId,
+        schemaVersion,
+        stored,
+      );
     }
     return DocView._(
       buffer,
       offset,
       bodyStart,
       bodyEnd,
+      bodyEnd,
       flags,
       schemaId,
       schemaVersion,
+      null,
     );
+  }
+
+  /// Parses a document and verifies its checksum when one is present.
+  static DocView parseVerified(Uint8List buffer, [int offset = 0, int? length]) {
+    final view = parse(buffer, offset, length);
+    view.verifyChecksum();
+    return view;
   }
 
   /// Backing bytes; do not modify while views are alive.
@@ -111,8 +140,30 @@ final class DocView {
   /// Offset one past this document inside [buffer].
   final int byteEnd;
 
-  /// Total encoded size in bytes.
-  int get byteLength => bodyEnd - byteOffset;
+  /// Stored CRC-32C of the body, or `null` when the document has none.
+  final int? checksum;
+
+  /// Whether the document carries a checksum trailer.
+  bool get hasChecksum => checksum != null;
+
+  /// Recomputes CRC-32C and throws when it does not match the stored value.
+  ///
+  /// A no-op for documents without a checksum.
+  void verifyChecksum() {
+    final stored = checksum;
+    if (stored == null) return;
+    final actual = VxsCrc32c.compute(buffer, bodyStart, bodyEnd);
+    if (actual != stored) {
+      throw VxsFormatException(
+        'checksum mismatch: stored 0x${stored.toRadixString(16)}, '
+        'computed 0x${actual.toRadixString(16)}',
+        offset: bodyEnd,
+      );
+    }
+  }
+
+  /// Total encoded size in bytes, including any checksum trailer.
+  int get byteLength => byteEnd - byteOffset;
 
   /// Number of field entries, obtained by scanning.
   int get fieldCount {
@@ -210,6 +261,24 @@ final class DocView {
       if (cursor.fieldId != fieldId) continue;
       _requireWire(cursor, fieldId, VxsWire.lengthDelimited);
       return Bytes.view(buffer, cursor.valueOffset, cursor.valueLength);
+    }
+    return null;
+  }
+
+  /// Returns a zero-copy UTF-8 view of a string field.
+  ///
+  /// Use this instead of [getString] whenever the value only needs to be
+  /// compared, hashed or prefix-matched: no `String` is allocated.
+  StringView? getStringView(int fieldId) {
+    final cursor = this.cursor();
+    while (cursor.next()) {
+      if (cursor.fieldId != fieldId) continue;
+      _requireWire(cursor, fieldId, VxsWire.lengthDelimited);
+      return StringView(
+        buffer,
+        cursor.valueOffset,
+        cursor.valueOffset + cursor.valueLength,
+      );
     }
     return null;
   }
@@ -329,17 +398,37 @@ final class DocCursor {
   }
 
   int _readVarint() {
-    var result = 0;
-    var multiplier = 1;
+    // Same limb accumulation as VxsVarint.decode, inlined: this is the hot path
+    // for every field, and a record return would allocate on the web.
+    var lo = 0;
+    var hi = 0;
+    var shift = 0;
     for (var count = 0; count < 10; count++) {
       if (_pos >= _end) {
         throw VxsFormatException('truncated varint', offset: _pos);
       }
       final byte = _bytes[_pos++];
-      result += (byte & 0x7F) * multiplier;
-      if (byte < 0x80) return result;
-      multiplier *= 0x80;
+      final bits = byte & 0x7F;
+      if (shift < 32) {
+        lo += bits * _varintPow2[shift ~/ 7];
+      } else {
+        final k = shift - 32;
+        if (k >= 32) {
+          throw VxsFormatException('varint wider than 64 bits', offset: _pos);
+        }
+        hi += bits * (1 << k);
+      }
+      if (byte < 0x80) return hi * 0x100000000 + lo;
+      shift += 7;
     }
     throw VxsFormatException('varint longer than 10 bytes', offset: _pos);
   }
+
+  static const List<int> _varintPow2 = <int>[
+    1,
+    128,
+    16384,
+    2097152,
+    268435456,
+  ];
 }

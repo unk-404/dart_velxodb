@@ -61,9 +61,25 @@ jobs:
             dart compile js packages/velxodb/example/velxodb_example.dart -o /tmp/smoke.js
           fi
 
+  browser:
+    name: browser / chrome
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - name: Resolve workspace
+        run: dart pub get
+      # Compiling is not enough: JS integer semantics and the handwritten UTF-8
+      # encoder can only be checked by running the suite in a browser.
+      - name: Run the suite in Chrome
+        working-directory: packages/velxodb
+        run: dart test -p chrome -j 1 test
+
   bench:
     name: benchmark
-    needs: [test, web]
+    needs: [test, web, browser]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

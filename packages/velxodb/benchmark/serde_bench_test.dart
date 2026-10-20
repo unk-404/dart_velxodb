@@ -4,6 +4,9 @@
 // Each iteration performs [batch] operations: the benchmark harness has
 // microsecond-granularity overhead that would otherwise dominate a 130-byte
 // encode. Derived per-op numbers live in `benchcat.toml`.
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:benchmark_test/benchmark_test.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
@@ -89,6 +92,28 @@ void main() {
     benchmark('project.one', () {
       for (var i = 0; i < batch; i++) {
         sink += view.getString(5)?.length ?? 0;
+      }
+    });
+
+    final a = StringView.of(
+      Uint8List.fromList(utf8.encode('01J8Z4K2M3N4P5Q6R7S8T9V0W1')),
+    );
+    final b = StringView.of(
+      Uint8List.fromList(utf8.encode('01J8Z4K2M3N4P5Q6R7S8T9V0W2')),
+    );
+    benchmark('view.compare', () {
+      for (var i = 0; i < batch; i++) {
+        if (a.compareTo(b) < 0) sink++;
+      }
+    });
+
+    final kib = Uint8List(1024);
+    for (var i = 0; i < kib.length; i++) {
+      kib[i] = i % 251;
+    }
+    benchmark('crc.1KiB', () {
+      for (var i = 0; i < batch; i++) {
+        sink += VxsCrc32c.compute(kib);
       }
     });
   });

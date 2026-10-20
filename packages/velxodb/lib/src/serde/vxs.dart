@@ -116,7 +116,10 @@ abstract final class VxsVarint {
   }
 
   /// Writes [value] at [offset] and returns the number of bytes written.
+  ///
+  /// [value] must be non-negative; signed values go through [zigzag] first.
   static int write(Uint8List out, int offset, int value) {
+    assert(value >= 0, 'varints encode unsigned values; zigzag negatives first');
     var v = value;
     var i = offset;
     while (v >= 0x80) {
@@ -128,25 +131,50 @@ abstract final class VxsVarint {
   }
 
   /// Reads a varint starting at [offset], not reading at or past [end].
+  ///
+  /// Accumulates into two 32-bit limbs instead of multiplying by 128 repeatedly.
+  /// On the web every Dart `int` is a JS number, so a single `bits * 128^shift`
+  /// product loses precision past 2^53; limb accumulation keeps each product
+  /// below that limit and composes `hi * 2^32 + lo` exactly.
   static ({int value, int next}) decode(
     Uint8List src,
     int offset,
     int end,
   ) {
-    var result = 0;
-    var multiplier = 1;
+    var lo = 0;
+    var hi = 0;
+    var shift = 0;
     var i = offset;
     for (var count = 0; count < 10; count++) {
       if (i >= end) {
         throw VxsFormatException('truncated varint', offset: offset);
       }
       final byte = src[i++];
-      result += (byte & 0x7F) * multiplier;
-      if (byte < 0x80) return (value: result, next: i);
-      multiplier *= 0x80;
+      final bits = byte & 0x7F;
+      if (shift < 32) {
+        lo += bits * _pow2[shift ~/ 7];
+      } else {
+        final k = shift - 32;
+        if (k >= 32) {
+          throw VxsFormatException('varint wider than 64 bits', offset: offset);
+        }
+        hi += bits * (1 << k);
+      }
+      if (byte < 0x80) {
+        return (value: hi * 0x100000000 + lo, next: i);
+      }
+      shift += 7;
     }
     throw VxsFormatException('varint longer than 10 bytes', offset: offset);
   }
+
+  static const List<int> _pow2 = <int>[
+    1,
+    128,
+    16384,
+    2097152,
+    268435456,
+  ];
 
   /// Maps a signed integer onto an unsigned one, keeping small magnitudes small.
   static int zigzag(int value) => value < 0 ? -2 * value - 1 : 2 * value;

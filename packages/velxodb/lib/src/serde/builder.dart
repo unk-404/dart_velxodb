@@ -110,14 +110,14 @@ final class DocBuilder {
   /// Patches the header and returns the finished document.
   ///
   /// The returned view shares the builder's buffer; [reset] starts a new one, so
-  /// the view stays valid.
-  Bytes finish() {
+  /// the view stays valid. [checksum] appends a CRC-32C trailer.
+  Bytes finish({bool checksum = false}) {
     if (_finished) {
       throw StateError('finish() has already been called');
     }
     _ensureOpen();
     _finished = true;
-    final start = _sink.endDoc();
+    final start = _sink.endDoc(checksum: checksum);
     return Bytes.view(_sink.buffer, start, _sink.length - start);
   }
 

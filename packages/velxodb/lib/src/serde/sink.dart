@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:blit/blit.dart';
 
+import 'crc32c.dart';
 import 'vxs.dart';
 
 /// A bump-allocated buffer that holds many consecutive VXS documents.
@@ -62,21 +63,41 @@ final class DocSink {
   }
 
   /// Patches the header of the open document and returns its start offset.
-  int endDoc() {
+  ///
+  /// When [checksum] is true a CRC-32C of the body is appended and the header
+  /// flag is set. This costs roughly one pass over the body, so it is meant for
+  /// standalone documents (WAL entries) rather than every record in a block.
+  int endDoc({bool checksum = false}) {
     if (!_open) {
       throw StateError('no document is open');
     }
-    final bodyStart = _docStart + vxsHeaderSize;
+    var bodyStart = _docStart + vxsHeaderSize;
     final bodyLength = _pos - bodyStart;
-    if (bodyLength <= vxsMaxSmallBody) {
-      _data[_docStart] = vxsMagic;
-      _data[_docStart + 1] = 0;
-      _data[_docStart + 2] = _schemaId;
-      _data[_docStart + 3] = _schemaVersion;
-      VxsLe.w16(_data, _docStart + 4, bodyLength);
-    } else {
-      _growHeaderTo32(bodyStart, bodyLength);
+    var headerSize = vxsHeaderSize;
+    var flags = checksum ? vxsFlagCrc32c : 0;
+
+    if (bodyLength > vxsMaxSmallBody) {
+      bodyStart = _shiftBodyForWideHeader(bodyStart);
+      headerSize = vxsHeaderSizeLarge;
+      flags |= vxsFlagLength32;
     }
+    if (checksum) {
+      _ensure(4);
+      final crc = VxsCrc32c.compute(_data, bodyStart, bodyStart + bodyLength);
+      VxsLe.w32(_data, bodyStart + bodyLength, crc);
+      _pos = bodyStart + bodyLength + 4;
+    }
+
+    _data[_docStart] = vxsMagic;
+    _data[_docStart + 1] = flags;
+    _data[_docStart + 2] = _schemaId;
+    _data[_docStart + 3] = _schemaVersion;
+    if (headerSize == vxsHeaderSizeLarge) {
+      VxsLe.w32(_data, _docStart + 4, bodyLength);
+    } else {
+      VxsLe.w16(_data, _docStart + 4, bodyLength);
+    }
+
     final start = _docStart;
     _open = false;
     _docStart = -1;
@@ -277,20 +298,18 @@ final class DocSink {
     _floatData = null;
   }
 
-  /// Rewrites a document's header from 6 to 8 bytes. Rare (>64 KiB documents);
-  /// the backwards loop is safe on overlapping ranges.
-  void _growHeaderTo32(int bodyStart, int bodyLength) {
-    _ensure(2);
+  /// Rewrites a document's body from the small to the wide header. Rare
+  /// (>64 KiB documents); the backwards loop is safe on overlapping ranges.
+  ///
+  /// Returns the shifted body start.
+  int _shiftBodyForWideHeader(int bodyStart) {
     final end = _pos;
+    _ensure(2);
     for (var i = end - 1; i >= bodyStart; i--) {
       _data[i + 2] = _data[i];
     }
     _pos = end + 2;
-    _data[_docStart] = vxsMagic;
-    _data[_docStart + 1] = vxsFlagLength32;
-    _data[_docStart + 2] = _schemaId;
-    _data[_docStart + 3] = _schemaVersion;
-    VxsLe.w32(_data, _docStart + 4, bodyLength);
+    return bodyStart + 2;
   }
 
   static List<int> _utf8Fallback(String value) => _encode(value);

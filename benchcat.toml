@@ -43,6 +43,21 @@ value = "1000000000 / (value * 100)"
 group = "VXS format"
 
 [[row]]
+id = "serde view.compare"
+label = "Compare 26 B keys (zero-copy)"
+note = "StringView vs String"
+unit = "ns/op"
+value = "1000000000 / (value * 100)"
+group = "VXS format"
+
+[[row]]
+id = "serde crc.1KiB"
+label = "CRC-32C over 1 KiB"
+unit = "MB/s"
+value = "value * 100 * 1024 / 1000000"
+group = "VXS format"
+
+[[row]]
 id = "serde decode.getters"
 label = "Read 3 fields via getters"
 note = "O(n^2) convenience path"

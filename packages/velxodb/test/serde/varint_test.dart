@@ -14,9 +14,9 @@ void main() {
       300,
       16383,
       16384,
-      1 << 20,
-      1 << 31,
-      (1 << 53) - 1,
+      1048576, // 2^20
+      2147483648, // 2^31
+      9007199254740991, // 2^53-1, the largest exact double integer
     ];
 
     test('size matches the encoded length', () {
@@ -86,8 +86,11 @@ void main() {
       VxsLe.w32(buffer, 0, 0xDEADBEEF);
       expect(VxsLe.u32(buffer, 0), 0xDEADBEEF);
 
-      VxsLe.w64(buffer, 0, 0x0123456789ABCDEF);
-      expect(VxsLe.u64(buffer, 0), 0x0123456789ABCDEF);
+      // 2^53-1 compiles on dart2js too; full 64-bit range is VM-only and lives
+      // in vm_int64_test.dart.
+      const maxExact = 0x001FFFFFFFFFFFFF;
+      VxsLe.w64(buffer, 0, maxExact);
+      expect(VxsLe.u64(buffer, 0), maxExact);
     });
   });
 }
