@@ -1,0 +1,21 @@
+name: velxodb
+description: A starting point for Dart libraries or applications.
+version: 1.0.0
+# repository: https://github.com/my_org/my_repo
+
+environment:
+  sdk: ^3.13.5
+
+# Add regular dependencies here.
+dependencies:
+  blit: ^0.1.6
+  brotli_neo: ^0.1.2
+  lzo_neo: ^0.1.2
+  parquet: ^0.1.2
+  snappy_neo: ^0.1.2
+  zstd_neo: ^0.1.2
+  # path: ^1.9.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6
