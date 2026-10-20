@@ -1,4 +1,7 @@
 # Rendered by benchcat (https://github.com/unk-404/benchcat).
+#
+# The serde benchmarks run `batch` operations per iteration, so every derived
+# value multiplies throughput back up by that factor.
 [render]
 title = "velxodb"
 subtitle = "{platform|local} - commit {commit:short|local}"
@@ -6,3 +9,57 @@ footer = "Generated from {rows} rows"
 width = 920
 max_rows = 28
 kaomoji = ""
+
+[[row]]
+id = "serde encode.5field"
+label = "Encode a 130 B chat doc"
+note = "5 fields, builder + finish"
+unit = "MB/s"
+value = "value * 100 * 130 / 1000000"
+group = "VXS format"
+
+[[row]]
+id = "serde decode.singleScan"
+label = "Scan all 5 fields"
+note = "cursor, no value materialisation"
+unit = "ns/op"
+value = "1000000000 / (value * 100)"
+group = "VXS format"
+
+[[row]]
+id = "serde project.one"
+label = "Project one text field"
+note = "scan + utf8 decode"
+unit = "ns/op"
+value = "1000000000 / (value * 100)"
+group = "VXS format"
+
+[[row]]
+id = "serde decode.getters"
+label = "Read 3 fields via getters"
+note = "O(n^2) convenience path"
+unit = "ns/op"
+value = "1000000000 / (value * 100)"
+group = "VXS format"
+
+[[row]]
+id = "format bytes.mut.write"
+label = "BytesMut write"
+note = "blit primitives"
+unit = "Mops/s"
+value = "value / 1000000"
+group = "Primitives"
+
+[[row]]
+id = "format zstd.encode"
+label = "zstd encode"
+unit = "Mops/s"
+value = "value / 1000000"
+group = "Primitives"
+
+[[row]]
+id = "format zstd.decode"
+label = "zstd decode"
+unit = "Mops/s"
+value = "value / 1000000"
+group = "Primitives"
