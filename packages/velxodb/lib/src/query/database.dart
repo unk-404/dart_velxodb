@@ -4,6 +4,7 @@ import '../storage/engine.dart';
 import '../storage/io/storage_io.dart';
 import 'catalog.dart';
 import 'collection.dart';
+import 'fulltext.dart';
 import 'graph.dart';
 import 'index.dart';
 import 'reference.dart';
@@ -86,6 +87,30 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
 
   @override
   int? collectionIdOf(String name) => _catalog.idOf(name);
+
+  @override
+  TextIndexDefinition? textIndexFor(int collectionId, int fieldId) =>
+      _catalog.textIndexFor(collectionId, fieldId);
+
+  @override
+  List<TextIndexDefinition> textIndexesFor(int collectionId) =>
+      <TextIndexDefinition>[
+        for (final textIndex in _catalog.textIndexes)
+          if (textIndex.collectionId == collectionId) textIndex,
+      ];
+
+  @override
+  TextIndexDefinition registerTextIndex(
+    int collectionId,
+    int fieldId,
+    Tokenizer tokenizer,
+  ) {
+    final existing = _catalog.textIndexFor(collectionId, fieldId);
+    if (existing != null) return existing;
+    _catalog = _catalog.withTextIndex(collectionId, fieldId, tokenizer);
+    _catalogStore.saveSync(_catalog);
+    return _catalog.textIndexFor(collectionId, fieldId)!;
+  }
 
   @override
   ReferenceDefinition? referenceFor(int collectionId, int fieldId) =>

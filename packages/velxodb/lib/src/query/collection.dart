@@ -5,10 +5,12 @@ import 'package:blit/blit.dart';
 
 import '../serde/builder.dart';
 import '../serde/schema.dart';
+import '../serde/string_view.dart';
 import '../serde/view.dart';
 import '../storage/engine.dart';
 import '../storage/wal.dart';
 import 'cursor.dart';
+import 'fulltext.dart';
 import 'index.dart';
 import 'plan.dart';
 import 'reference.dart';
@@ -35,6 +37,9 @@ final class Collection {
       for (final reference in catalog.referencesFor(id)) {
         _references[reference.fieldId] = reference;
       }
+      for (final textIndex in catalog.textIndexesFor(id)) {
+        _textIndexes[textIndex.fieldId] = textIndex;
+      }
     }
   }
 
@@ -50,6 +55,7 @@ final class Collection {
   final CollectionCatalog? _catalog;
   final Map<int, IndexDefinition> _indexes = <int, IndexDefinition>{};
   final Map<int, ReferenceDefinition> _references = <int, ReferenceDefinition>{};
+  final Map<int, TextIndexDefinition> _textIndexes = <int, TextIndexDefinition>{};
 
   /// Whether writes verify that referenced documents exist.
   ///
@@ -63,6 +69,10 @@ final class Collection {
 
   /// Declared reference bindings by field id.
   Map<int, ReferenceDefinition> get references => Map.unmodifiable(_references);
+
+  /// Declared full-text indexes by field id.
+  Map<int, TextIndexDefinition> get textIndexes =>
+      Map.unmodifiable(_textIndexes);
 
   /// Reads [key], or `null` when absent or deleted.
   Bytes? get(Uint8List key) => engine.get(composeKey(key));
@@ -79,6 +89,7 @@ final class Collection {
     _checkReferences(newView);
     final ops = <WalOp>[WalOp.put(full, document.asUint8List())];
     _collectIndexOps(ops, key, oldView, newView);
+    _collectTextOps(ops, key, oldView, newView);
     engine.applyBatchSync(ops);
   }
 
@@ -417,6 +428,171 @@ final class Collection {
     return out;
   }
 
+  /// Creates (and backfills) a full-text index on [fieldId].
+  ///
+  /// Tokenization is decided here; the database only stores the resulting terms
+  /// as `[indexId][term][primaryKey]` postings.
+  TextIndexDefinition createTextIndex(
+    int fieldId, {
+    Tokenizer tokenizer = const WordTokenizer(),
+  }) {
+    final existing = _textIndexes[fieldId];
+    if (existing != null) return existing;
+    final catalog = _catalog;
+    if (catalog == null) {
+      throw StateError('this collection handle has no catalog; '
+          'open it through VelxoDatabase.collection');
+    }
+    final definition = catalog.registerTextIndex(id, fieldId, tokenizer);
+    _textIndexes[fieldId] = definition;
+    _backfillText(definition);
+    return definition;
+  }
+
+  /// Searches the full-text index on [fieldId].
+  ///
+  /// [mode] combines query terms: [TextQueryMode.any] is a union,
+  /// [TextQueryMode.all] an intersection. Hits are re-checked against the
+  /// document so stale postings never surface.
+  List<ScanEntry> searchTextSync(
+    int fieldId,
+    String query, {
+    TextQueryMode mode = TextQueryMode.any,
+    int? limit,
+  }) {
+    final definition = _textIndexes[fieldId];
+    if (definition == null) {
+      throw StateError('no text index on field $fieldId');
+    }
+    final terms = definition.tokenize(query).toSet();
+    if (terms.isEmpty) return const <ScanEntry>[];
+
+    final byPrimaryKey = <String, ScanEntry>{};
+    Set<String>? intersection;
+    for (final term in terms) {
+      final hits = _lookupTerm(definition, term);
+      if (intersection == null) {
+        intersection = hits.keys.toSet();
+        byPrimaryKey.addAll(hits);
+      } else {
+        intersection = intersection.intersection(hits.keys.toSet());
+        for (final hit in hits.entries) {
+          byPrimaryKey.putIfAbsent(hit.key, () => hit.value);
+        }
+      }
+      if (mode == TextQueryMode.all && intersection.isEmpty) break;
+    }
+
+    final candidates = mode == TextQueryMode.all
+        ? <String, ScanEntry>{
+            for (final key in intersection!)
+              if (byPrimaryKey.containsKey(key)) key: byPrimaryKey[key]!,
+          }
+        : byPrimaryKey;
+
+    final out = <ScanEntry>[];
+    for (final candidate in candidates.values) {
+      final document = get(candidate.key);
+      if (document == null) continue;
+      final text =
+          DocView.parse(document.asUint8List()).getString(fieldId) ?? '';
+      final tokens = definition.tokenize(text).toSet();
+      final matches = mode == TextQueryMode.all
+          ? terms.every(tokens.contains)
+          : terms.any(tokens.contains);
+      if (!matches) continue;
+      out.add((key: candidate.key, value: document));
+      if (limit != null && out.length >= limit) break;
+    }
+    out.sort(
+      (a, b) => StringView.compareRanges(
+        a.key,
+        0,
+        a.key.length,
+        b.key,
+        0,
+        b.key.length,
+      ),
+    );
+    return out;
+  }
+
+  Map<String, ScanEntry> _lookupTerm(
+    TextIndexDefinition definition,
+    String term,
+  ) {
+    final prefix = definition.termPrefix(term);
+    final prefixLength = TextIndexDefinition.termPrefixLength(term);
+    final cursor = buildCollectionCursor(
+      engine: engine,
+      fullPrefix: prefix,
+      lower: prefix,
+      includeLower: true,
+      upper: _prefixUpperBound(prefix),
+      includeUpper: false,
+    );
+    final hits = <String, ScanEntry>{};
+    while (cursor.moveNext()) {
+      final raw = cursor.current.key; // [encodedTerm][primaryKey]
+      final primaryKey = Uint8List.sublistView(raw, prefixLength);
+      hits[String.fromCharCodes(primaryKey)] = (
+        key: primaryKey,
+        value: cursor.current.value,
+      );
+    }
+    return hits;
+  }
+
+  void _collectTextOps(
+    List<WalOp> ops,
+    Uint8List primaryKey,
+    DocView? oldDocument,
+    DocView? newDocument,
+  ) {
+    if (_textIndexes.isEmpty) return;
+    for (final definition in _textIndexes.values) {
+      final oldText = oldDocument?.getString(definition.fieldId) ?? '';
+      final newText = newDocument?.getString(definition.fieldId) ?? '';
+      final oldTerms = definition.tokenize(oldText).toSet();
+      final newTerms = definition.tokenize(newText).toSet();
+      for (final term in oldTerms.difference(newTerms)) {
+        ops.add(WalOp.delete(definition.entryKey(term, primaryKey)));
+      }
+      for (final term in newTerms.difference(oldTerms)) {
+        ops.add(
+          WalOp.put(
+            definition.entryKey(term, primaryKey),
+            _emptyDocument.asUint8List(),
+          ),
+        );
+      }
+    }
+  }
+
+  void _backfillText(TextIndexDefinition definition) {
+    final cursor = this.cursor();
+    final ops = <WalOp>[];
+    while (cursor.moveNext()) {
+      final entry = cursor.current;
+      final text =
+          DocView.parse(entry.value.asUint8List()).getString(definition.fieldId) ??
+          '';
+      for (final term in definition.tokenize(text).toSet()) {
+        ops.add(
+          WalOp.put(
+            definition.entryKey(term, entry.key),
+            _emptyDocument.asUint8List(),
+          ),
+        );
+      }
+      if (ops.length >= 1000) {
+        engine.applyBatchSync(ops);
+        ops.clear();
+      }
+    }
+    if (ops.isNotEmpty) engine.applyBatchSync(ops);
+  }
+
   void _collectIndexOps(
     List<WalOp> ops,
     Uint8List primaryKey,
@@ -458,6 +634,7 @@ final class Collection {
     _handleReferrers(key, visited, depth);
     final ops = <WalOp>[WalOp.delete(full)];
     _collectIndexOps(ops, key, oldView, null);
+    _collectTextOps(ops, key, oldView, null);
     engine.applyBatchSync(ops);
   }
 

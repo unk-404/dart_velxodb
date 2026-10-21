@@ -12,6 +12,13 @@ export 'src/query/catalog.dart' show Catalog, CollectionEntry;
 export 'src/query/collection.dart' show Collection;
 export 'src/query/cursor.dart' show CollectionCursor;
 export 'src/query/database.dart';
+export 'src/query/fulltext.dart'
+    show
+        NgramTokenizer,
+        TextIndexDefinition,
+        TextQueryMode,
+        Tokenizer,
+        WordTokenizer;
 export 'src/query/graph.dart'
     show EdgeDirection, GraphEdge, GraphStore, NodeRef, RelationCatalog;
 export 'src/query/index.dart' show IndexCatalog, IndexDefinition;

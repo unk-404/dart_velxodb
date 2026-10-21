@@ -1,3 +1,4 @@
+import 'fulltext.dart';
 import 'index.dart';
 
 /// What happens to referring documents when the target is deleted.
@@ -59,6 +60,22 @@ abstract interface class ReferenceCatalog {
   int? collectionIdOf(String name);
 }
 
+/// Full-text index metadata owned by the catalog.
+abstract interface class TextIndexCatalog {
+  /// Looks up a full-text index by `(collection, field)`.
+  TextIndexDefinition? textIndexFor(int collectionId, int fieldId);
+
+  /// Full-text indexes declared on [collectionId].
+  List<TextIndexDefinition> textIndexesFor(int collectionId);
+
+  /// Persists a full-text index and returns it.
+  TextIndexDefinition registerTextIndex(
+    int collectionId,
+    int fieldId,
+    Tokenizer tokenizer,
+  );
+}
+
 /// Everything a [Collection] needs from the catalog.
 abstract interface class CollectionCatalog
-    implements IndexCatalog, ReferenceCatalog {}
+    implements IndexCatalog, ReferenceCatalog, TextIndexCatalog {}

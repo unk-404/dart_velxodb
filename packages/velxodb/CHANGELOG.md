@@ -97,5 +97,10 @@
 - `VelxoDatabase.close(flush: true)` for graceful shutdown: reopening then reads
   the manifest and maps segments instead of replaying the whole WAL (11 ms vs
   1.5 s for 100k unflushed documents).
+- Full-text primitives: a `Tokenizer` SPI (`WordTokenizer`, `NgramTokenizer`),
+  inverted postings stored as `[indexId][encodedTerm][primaryKey]` in the same
+  engine, maintained in the same WAL frame as the document, backfilled on
+  creation, and queried with `any`/`all` modes plus per-hit verification.
+  ~482k docs/s on 64 hits (JIT, including verification).
 - READMEs rewritten (workspace and package).
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).

@@ -142,26 +142,7 @@ final class IndexDefinition {
   ///
   /// The terminator sorts before any escaped byte, so a prefix sorts before its
   /// extensions and exact-match prefixes are unambiguous.
-  static Uint8List encodeString(String value) {
-    final bytes = utf8.encode(value);
-    var size = 2;
-    for (final byte in bytes) {
-      size += byte == 0 ? 2 : 1;
-    }
-    final out = Uint8List(size);
-    var position = 0;
-    for (final byte in bytes) {
-      if (byte == 0) {
-        out[position++] = 0x00;
-        out[position++] = 0xFF;
-      } else {
-        out[position++] = byte;
-      }
-    }
-    out[position++] = 0x00;
-    out[position] = 0x00;
-    return out;
-  }
+  static Uint8List encodeString(String value) => encodeOrderedString(value);
 
   static void _writeMagnitude(Uint8List out, int offset, int magnitude) {
     for (var i = 0; i < 8; i++) {
@@ -169,4 +150,48 @@ final class IndexDefinition {
       out[offset + i] = (magnitude >> shift) & 0xFF;
     }
   }
+}
+
+/// Order-preserving string encoding, shared by secondary and full-text indexes.
+Uint8List encodeOrderedString(String value) {
+  final bytes = utf8.encode(value);
+  var size = 2;
+  for (final byte in bytes) {
+    size += byte == 0 ? 2 : 1;
+  }
+  final out = Uint8List(size);
+  var position = 0;
+  for (final byte in bytes) {
+    if (byte == 0) {
+      out[position++] = 0x00;
+      out[position++] = 0xFF;
+    } else {
+      out[position++] = byte;
+    }
+  }
+  out[position++] = 0x00;
+  out[position] = 0x00;
+  return out;
+}
+
+/// Decodes one ordered string starting at [offset].
+///
+/// Returns the value and how many bytes it occupied (terminator included).
+({String value, int length}) decodeOrderedString(
+  Uint8List bytes,
+  int offset,
+) {
+  final out = <int>[];
+  var position = offset;
+  while (true) {
+    final byte = bytes[position++];
+    if (byte != 0) {
+      out.add(byte);
+      continue;
+    }
+    final next = bytes[position++];
+    if (next == 0x00) break;
+    out.add(0);
+  }
+  return (value: utf8.decode(out), length: position - offset);
 }

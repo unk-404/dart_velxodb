@@ -27,6 +27,7 @@ Bytes indexedMessage(int value) => (DocBuilder(schemaId: 1)
 /// In-memory catalog so the benchmark does not need a real directory.
 final class _StubCatalog implements CollectionCatalog {
   final List<IndexDefinition> _definitions = <IndexDefinition>[];
+  final List<TextIndexDefinition> _textDefinitions = <TextIndexDefinition>[];
 
   @override
   IndexDefinition? indexFor(int collectionId, int fieldId) {
@@ -78,6 +79,40 @@ final class _StubCatalog implements CollectionCatalog {
     int targetCollectionId,
     OnDelete onDelete,
   ) => throw UnsupportedError('no references in benchmarks');
+
+  @override
+  TextIndexDefinition? textIndexFor(int collectionId, int fieldId) {
+    for (final definition in _textDefinitions) {
+      if (definition.collectionId == collectionId &&
+          definition.fieldId == fieldId) {
+        return definition;
+      }
+    }
+    return null;
+  }
+
+  @override
+  List<TextIndexDefinition> textIndexesFor(int collectionId) =>
+      <TextIndexDefinition>[
+        for (final definition in _textDefinitions)
+          if (definition.collectionId == collectionId) definition,
+      ];
+
+  @override
+  TextIndexDefinition registerTextIndex(
+    int collectionId,
+    int fieldId,
+    Tokenizer tokenizer,
+  ) {
+    final definition = TextIndexDefinition(
+      collectionId: collectionId,
+      fieldId: fieldId,
+      indexId: 700 + fieldId,
+      tokenizer: tokenizer,
+    );
+    _textDefinitions.add(definition);
+    return definition;
+  }
 }
 
 void main() {
@@ -113,6 +148,17 @@ void main() {
   ];
   for (var i = 0; i < keyCount; i++) {
     graph.link('follows', nodes[i], nodes[(i + 1) % keyCount]);
+  }
+
+  // A collection with a full-text index on field 1.
+  final textCollection = Collection(engine, 3, 'text', catalog: _StubCatalog());
+  textCollection.createTextIndex(1, tokenizer: const WordTokenizer());
+  for (var i = 0; i < keyCount; i++) {
+    textCollection.putSync(
+      keys[i],
+      (DocBuilder(schemaId: 1)..putString(1, 'alpha beta gamma item$i'))
+          .finish(),
+    );
   }
 
   group('query', () {
@@ -169,6 +215,12 @@ void main() {
           token = page.next;
           sink += page.entries.length;
         } while (token != null);
+      }
+    });
+
+    benchmark('collection.textSearch', () {
+      for (var round = 0; round < batch; round++) {
+        sink += textCollection.searchTextSync(1, 'alpha').length;
       }
     });
 

@@ -161,6 +161,14 @@ value = "value * 100 * 64 / 1000"
 group = "Query"
 
 [[row]]
+id = "query collection.textSearch"
+label = "Full-text search"
+note = "64 hits, verified"
+unit = "Kdocs/s"
+value = "value * 100 * 64 / 1000"
+group = "Query"
+
+[[row]]
 id = "query graph.link"
 label = "Graph link"
 note = "both directions, 1 frame"

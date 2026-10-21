@@ -4,6 +4,7 @@ import '../serde/crc32c.dart';
 import '../serde/schema.dart';
 import '../serde/vxs.dart';
 import '../storage/directory.dart';
+import 'fulltext.dart';
 import 'index.dart';
 import 'reference.dart';
 import 'relation.dart';
@@ -12,7 +13,7 @@ import 'relation.dart';
 const int catalogMagic = 0x43;
 
 /// Catalog format version written by this build.
-const int catalogVersion = 4;
+const int catalogVersion = 5;
 
 /// Name of the catalog file.
 const String catalogFileName = 'CATALOG';
@@ -41,17 +42,20 @@ final class Catalog {
     List<IndexDefinition> indexes = const [],
     List<ReferenceDefinition> references = const [],
     List<RelationDefinition> relations = const [],
+    List<TextIndexDefinition> textIndexes = const [],
   ]) : entries = List<CollectionEntry>.unmodifiable(entries),
        indexes = List<IndexDefinition>.unmodifiable(indexes),
        references = List<ReferenceDefinition>.unmodifiable(references),
-       relations = List<RelationDefinition>.unmodifiable(relations);
+       relations = List<RelationDefinition>.unmodifiable(relations),
+       textIndexes = List<TextIndexDefinition>.unmodifiable(textIndexes);
 
   /// An empty catalog.
   Catalog.empty()
     : entries = const <CollectionEntry>[],
       indexes = const <IndexDefinition>[],
       references = const <ReferenceDefinition>[],
-      relations = const <RelationDefinition>[];
+      relations = const <RelationDefinition>[],
+      textIndexes = const <TextIndexDefinition>[];
 
   /// Registered collections.
   final List<CollectionEntry> entries;
@@ -64,6 +68,9 @@ final class Catalog {
 
   /// Registered graph relations.
   final List<RelationDefinition> relations;
+
+  /// Registered full-text indexes.
+  final List<TextIndexDefinition> textIndexes;
 
   /// Finds the id of [name], or `null`.
   int? idOf(String name) {
@@ -83,7 +90,7 @@ final class Catalog {
     return null;
   }
 
-  /// Next free id across collections, indexes and relations.
+  /// Next free id across collections, indexes, relations and text indexes.
   int nextId() {
     var next = 1;
     for (final entry in entries) {
@@ -94,6 +101,9 @@ final class Catalog {
     }
     for (final relation in relations) {
       if (relation.id >= next) next = relation.id + 1;
+    }
+    for (final textIndex in textIndexes) {
+      if (textIndex.indexId >= next) next = textIndex.indexId + 1;
     }
     return next;
   }
@@ -108,7 +118,7 @@ final class Catalog {
     return Catalog(<CollectionEntry>[
       ...entries,
       CollectionEntry(next, name),
-    ], indexes, references, relations);
+    ], indexes, references, relations, textIndexes);
   }
 
   /// Returns a catalog with an index added for `(collectionId, fieldId)`.
@@ -127,7 +137,40 @@ final class Catalog {
         type: type,
         indexId: next,
       ),
-    ], references, relations);
+    ], references, relations, textIndexes);
+  }
+
+  /// Finds the full-text index for `(collectionId, fieldId)`, or `null`.
+  TextIndexDefinition? textIndexFor(int collectionId, int fieldId) {
+    for (final textIndex in textIndexes) {
+      if (textIndex.collectionId == collectionId &&
+          textIndex.fieldId == fieldId) {
+        return textIndex;
+      }
+    }
+    return null;
+  }
+
+  /// Returns a catalog with a full-text index added.
+  Catalog withTextIndex(
+    int collectionId,
+    int fieldId,
+    Tokenizer tokenizer,
+  ) {
+    if (textIndexFor(collectionId, fieldId) != null) return this;
+    final next = nextId();
+    if (next > 0xFFFE) {
+      throw StateError('text index id space exhausted');
+    }
+    return Catalog(entries, indexes, references, relations, <TextIndexDefinition>[
+      ...textIndexes,
+      TextIndexDefinition(
+        collectionId: collectionId,
+        fieldId: fieldId,
+        indexId: next,
+        tokenizer: tokenizer,
+      ),
+    ]);
   }
 
   /// Finds the id of relation [name], or `null`.
@@ -156,7 +199,7 @@ final class Catalog {
     return Catalog(entries, indexes, references, <RelationDefinition>[
       ...relations,
       RelationDefinition(next, name),
-    ]);
+    ], textIndexes);
   }
 
   /// Finds the reference for `(collectionId, fieldId)`, or `null`.
@@ -186,7 +229,7 @@ final class Catalog {
         targetCollectionId: targetCollectionId,
         onDelete: onDelete,
       ),
-    ]);
+    ], relations, textIndexes);
   }
 
   /// Serializes the catalog.
@@ -201,6 +244,7 @@ final class Catalog {
     for (final relation in relations) {
       size += relation.name.length;
     }
+    size += 4 + textIndexes.length * 8;
     final out = Uint8List(size);
     out[0] = catalogMagic;
     out[1] = catalogVersion;
@@ -248,6 +292,18 @@ final class Catalog {
       final nameBytes = relation.name.codeUnits;
       out.setRange(pos, pos + nameBytes.length, nameBytes);
       pos += nameBytes.length;
+    }
+    VxsLe.w32(out, pos, textIndexes.length);
+    pos += 4;
+    for (final textIndex in textIndexes) {
+      VxsLe.w16(out, pos, textIndex.collectionId);
+      pos += 2;
+      VxsLe.w16(out, pos, textIndex.fieldId);
+      pos += 2;
+      VxsLe.w16(out, pos, textIndex.indexId);
+      pos += 2;
+      out[pos++] = textIndex.tokenizer.kindCode;
+      out[pos++] = textIndex.tokenizer.ngramSize;
     }
     VxsLe.w32(out, pos, VxsCrc32c.compute(out, 0, pos));
     return out;
@@ -372,10 +428,39 @@ final class Catalog {
         relations.add(RelationDefinition(id, name));
       }
     }
+    final textIndexes = <TextIndexDefinition>[];
+    if (version >= 5) {
+      if (pos + 4 > bodyEnd) {
+        throw const VxsFormatException('truncated catalog text index list');
+      }
+      final textIndexCount = VxsLe.u32(bytes, pos);
+      pos += 4;
+      for (var i = 0; i < textIndexCount; i++) {
+        if (pos + 8 > bodyEnd) {
+          throw const VxsFormatException('truncated catalog text index');
+        }
+        final collectionId = VxsLe.u16(bytes, pos);
+        pos += 2;
+        final fieldId = VxsLe.u16(bytes, pos);
+        pos += 2;
+        final indexId = VxsLe.u16(bytes, pos);
+        pos += 2;
+        final kind = bytes[pos++];
+        final ngram = bytes[pos++];
+        textIndexes.add(
+          TextIndexDefinition(
+            collectionId: collectionId,
+            fieldId: fieldId,
+            indexId: indexId,
+            tokenizer: tokenizerFrom(kind, ngram),
+          ),
+        );
+      }
+    }
     if (pos != bodyEnd) {
       throw const VxsFormatException('trailing bytes in catalog');
     }
-    return Catalog(entries, indexes, references, relations);
+    return Catalog(entries, indexes, references, relations, textIndexes);
   }
 }
 
