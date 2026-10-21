@@ -62,6 +62,7 @@ final class StorageEngine {
   final MemTable _memtable = MemTable();
 
   final List<SegmentReader> _segments = <SegmentReader>[];
+  final List<MappedFile> _segmentMaps = <MappedFile>[];
   final List<SegmentInfo> _segmentInfos = <SegmentInfo>[];
   Manifest? _manifest;
   int _nextSegmentId = 1;
@@ -110,8 +111,11 @@ final class StorageEngine {
     if (manifest != null) {
       _manifest = manifest;
       for (final info in manifest.segments) {
-        final bytes = _readFile(info.name);
-        _segments.add(SegmentReader(bytes));
+        // Segments are immutable: map them instead of copying. The view stays
+        // valid until close(), which unmaps after the engine stops serving.
+        final mapped = _directory.mapSync(info.name);
+        _segmentMaps.add(mapped);
+        _segments.add(SegmentReader(mapped.bytes));
         _segmentInfos.add(info);
         _trackSegmentId(info.name);
       }
@@ -187,6 +191,7 @@ final class StorageEngine {
   /// Views returned from a segment point into the segment's buffer; views from
   /// the memtable point into the arena. Both stay valid until the next flush.
   Bytes? get(Uint8List key) {
+    _checkOpen();
     final ref = _memtable.get(key);
     if (ref != null) {
       return ref.length < 0 ? null : _arena.view(ref.chunk, ref.offset, ref.length);
@@ -303,26 +308,26 @@ final class StorageEngine {
   /// Async facade over [syncNow].
   Future<void> sync() async => syncNow();
 
-  /// Flushes pending writes. The directory stays owned by the caller.
+  /// Flushes pending writes and releases every mapped segment.
+  ///
+  /// The directory stays owned by the caller. After this call the engine
+  /// refuses reads as well as writes: a mapped segment must not be used after
+  /// it is unmapped.
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
     _walFile.flushSync();
     _walFile.closeSync();
+    for (final mapped in _segmentMaps) {
+      mapped.closeSync();
+    }
+    _segmentMaps.clear();
+    _segments.clear();
   }
 
   void _afterWrite() {
     if (autoSync) _walFile.flushSync();
     if (autoFlush && shouldFlush) flushSync();
-  }
-
-  Uint8List _readFile(String name) {
-    final file = _directory.openSync(name);
-    try {
-      return file.readAllSync();
-    } finally {
-      file.closeSync();
-    }
   }
 
   void _writeFile(String name, Uint8List bytes) {

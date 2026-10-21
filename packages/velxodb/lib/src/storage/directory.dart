@@ -22,6 +22,12 @@ abstract interface class SyncStorageDirectory {
 
   /// Names of all files, sorted.
   List<String> listSync();
+
+  /// Maps a whole file read-only.
+  ///
+  /// Backends that cannot map (in-memory, web) may return a plain view; the
+  /// contract is only that [MappedFile.bytes] stays valid until close.
+  MappedFile mapSync(String name);
 }
 
 /// In-memory directory used by tests and benchmarks.
@@ -62,6 +68,25 @@ final class MemoryStorageDirectory implements SyncStorageDirectory {
   @override
   List<String> listSync() => _files.keys.toList()..sort();
 
+  @override
+  MappedFile mapSync(String name) {
+    final file = _files[name];
+    if (file == null) throw StateError('no such file: $name');
+    return _MemoryMappedFile(file.bytes);
+  }
+
   /// Raw bytes of a file, for assertions.
   Uint8List? bytesOf(String name) => _files[name]?.bytes;
+}
+
+final class _MemoryMappedFile implements MappedFile {
+  _MemoryMappedFile(this._bytes);
+
+  final Uint8List _bytes;
+
+  @override
+  Uint8List get bytes => _bytes;
+
+  @override
+  void closeSync() {}
 }

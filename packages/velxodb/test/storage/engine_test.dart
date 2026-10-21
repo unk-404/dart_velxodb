@@ -247,7 +247,7 @@ void main() {
 
       await engine.close();
       expect(() => engine.putSync(k('b'), doc('y')), throwsStateError);
-      expect(engine.get(k('a')), isNotNull);
+      expect(() => engine.get(k('a')), throwsStateError);
     });
   });
 }

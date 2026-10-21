@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:blit/bytes_ffi.dart' show MappedRegion, MmapFile, openMmapFileSync;
+
 import '../directory.dart';
 import '../file.dart';
 
@@ -51,6 +53,18 @@ final class LocalStorageDirectory implements SyncStorageDirectory {
     }
     names.sort();
     return names;
+  }
+
+  @override
+  MappedFile mapSync(String name) {
+    final path = _pathOf(name);
+    final file = openMmapFileSync(path, create: false, readOnly: true);
+    try {
+      return _LocalMappedFile(file, file.map(writable: false));
+    } catch (_) {
+      file.close();
+      rethrow;
+    }
   }
 
   String _pathOf(String name) =>
@@ -124,5 +138,22 @@ final class LocalStorageFile implements SyncStorageFile {
 
   void _checkOpen() {
     if (_closed) throw StateError('file is closed');
+  }
+}
+
+/// Read-only mmap of a whole file.
+final class _LocalMappedFile implements MappedFile {
+  _LocalMappedFile(this._file, this._region);
+
+  final MmapFile _file;
+  final MappedRegion _region;
+
+  @override
+  Uint8List get bytes => _region.bytes;
+
+  @override
+  void closeSync() {
+    _region.close();
+    _file.close();
   }
 }

@@ -62,6 +62,19 @@ abstract interface class SyncStorageFile {
   void closeSync();
 }
 
+/// A read-only mapping of a whole file.
+///
+/// The bytes stay valid until [closeSync]; segments are immutable, so a mapped
+/// segment can be dropped in as a `Uint8List` without copying and without
+/// changing anything above the I/O layer.
+abstract interface class MappedFile {
+  /// Zero-copy view of the mapped bytes.
+  Uint8List get bytes;
+
+  /// Unmaps the file and releases the handle.
+  void closeSync();
+}
+
 /// In-memory file implementing both the sync and async interfaces.
 ///
 /// Used by tests and by the crash matrix: "power cut" is simulated by copying

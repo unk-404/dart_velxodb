@@ -235,4 +235,8 @@ final class _NullDirectory implements SyncStorageDirectory {
 
   @override
   List<String> listSync() => const <String>[];
+
+  @override
+  MappedFile mapSync(String name) =>
+      throw UnsupportedError('null directory');
 }

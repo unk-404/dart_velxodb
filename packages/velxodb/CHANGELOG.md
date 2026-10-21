@@ -36,4 +36,7 @@
 - Real local files: `LocalStorageDirectory` (dart:io, synchronous), `autoSync`
   and `autoFlush` policies, and a web stub so the package still compiles to
   Wasm. 1e6 documents: 355k docs/s import, p50 1.5 us point reads, 1.21x disk.
+- Segments are memory-mapped on open instead of copied; a 1e6-document database
+  opens in 38 ms with a 27 MB resident-set increase. Closing an engine now
+  unmaps segments and refuses further reads.
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).
