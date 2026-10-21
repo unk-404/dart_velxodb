@@ -63,3 +63,15 @@ final class VelxoReadOnlyException extends VelxoException {
   /// Creates a read-only error.
   const VelxoReadOnlyException(super.message);
 }
+
+/// The database was created by a newer major format and cannot be read.
+final class VelxoIncompatibleException extends VelxoException {
+  /// Creates an incompatible-format error.
+  const VelxoIncompatibleException(super.message);
+}
+
+/// The database uses an older major format and needs an explicit upgrade.
+final class VelxoUpgradeRequiredException extends VelxoException {
+  /// Creates an upgrade-required error.
+  const VelxoUpgradeRequiredException(super.message);
+}

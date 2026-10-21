@@ -159,6 +159,11 @@
 - Index range: removed the redundant per-hit document decode and value
   comparison; the cursor bounds already enforce the range. The 12k-hit
   comparison drops from 12.9 ms to 11.0 ms (isar is still ~1.25x faster).
+- Versioning: added the normative `VERSIONING.md` policy and a `FORMAT` stamp
+  (major, minor, CRC-32C). A patch must be byte-identical, a minor is
+  transparent inside the same major, and a major requires the explicit
+  `VelxoDatabase.upgradeSync` with a backup and a downgrade path. New typed
+  errors: `VelxoIncompatibleException`, `VelxoUpgradeRequiredException`.
 - Single-writer lock now also works on POSIX: an in-process registry of
   canonical paths complements the OS lock, which is process-wide there, so a
   second open inside the same process is rejected on Linux and macOS too.

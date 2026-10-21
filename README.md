@@ -411,6 +411,24 @@ reopen                            0ms          2 (1/0/0/1)      0.0MB      0.0MB
 - **I/O stays at the edge.** The format and the engine are tested without a
   filesystem; backends are interchangeable and small.
 
+## Versioning
+
+VelxoDB uses `A.B.C`. The normative policy is [VERSIONING.md](VERSIONING.md);
+the short version:
+
+- **C (patch)**: byte-identical format, unchanged API, no migration logic.
+- **B (minor)**: format may change; VelxoDB itself transparently upgrades or
+  ignores the difference, so every release inside the same A opens every
+  database without user action. API changes are additive; removals require an
+  explicit deprecation and happen only in the next A.
+- **A (major)**: format and/or API may break. Upgrading requires
+  `VelxoDatabase.upgradeSync(path)` with a backup and a documented downgrade
+  path; opening without upgrading raises `VelxoUpgradeRequiredException`, and
+  opening a newer major raises `VelxoIncompatibleException`.
+
+Each database carries a `FORMAT` stamp (`major`, `minor`, CRC-32C). A database
+without one is treated as `1.0` and stamped on the next writable open.
+
 ## Roadmap
 
 Already shipped: VXS format, WAL + segments + mmap, query layer, secondary

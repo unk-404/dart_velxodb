@@ -9,6 +9,7 @@ import '../storage/check.dart';import '../storage/directory.dart';
 import '../storage/engine.dart';
 import '../storage/io/storage_io.dart';
 import '../storage/maintenance.dart';
+import '../version.dart';
 import 'catalog.dart';
 import 'collection.dart';
 import 'cursor.dart';
@@ -62,6 +63,7 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
     final directory = LocalStorageDirectory(path, readOnly: readOnly);
     StorageEngine? engine;
     try {
+      checkFormatCompatibility(directory, readOnly: readOnly);
       final catalog = CatalogStore(directory, readOnly: readOnly).loadSync();
       engine = StorageEngine(
         directory: directory,
@@ -93,6 +95,37 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
 
   /// Async facade over [openSync].
   static Future<VelxoDatabase> open(String path) async => openSync(path);
+
+  /// Explicit major-format upgrade.
+  ///
+  /// Opening an older major without this raises
+  /// [VelxoUpgradeRequiredException]. A real migration must back up first and
+  /// switch atomically; no migration is registered while the format is 1.x, so
+  /// this reports that no path exists instead of touching data.
+  static void upgradeSync(String path) {
+    final directory = LocalStorageDirectory(path);
+    try {
+      final stamp = readFormatStamp(directory);
+      if (stamp == null) {
+        writeFormatStamp(directory);
+        return;
+      }
+      if (stamp.major > formatMajor) {
+        throw VelxoIncompatibleException(
+          'database format ${stamp.major}.${stamp.minor} is newer than '
+          'this build',
+        );
+      }
+      if (stamp.major < formatMajor) {
+        throw VelxoUpgradeRequiredException(
+          'no migration is registered from format ${stamp.major}.x',
+        );
+      }
+      if (stamp.minor < formatMinor) writeFormatStamp(directory);
+    } finally {
+      directory.closeSync();
+    }
+  }
 
   final SyncStorageDirectory _directory;
   final StorageEngine _engine;
