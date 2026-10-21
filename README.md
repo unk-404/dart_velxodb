@@ -212,6 +212,12 @@ collection.migrateSync(toVersion: 2, steps: [
 
 ## Benchmarks
 
+![velxodb benchmarks](https://raw.githubusercontent.com/unk-404/dart_velxodb/main/assets/benchmarks.svg)
+
+![velxodb engine vs sled](https://raw.githubusercontent.com/unk-404/dart_velxodb/main/assets/benchmarks-engine.svg)
+
+![velxodb database vs isar](https://raw.githubusercontent.com/unk-404/dart_velxodb/main/assets/benchmarks-db.svg)
+
 Everything lives under `benchmarks/`. The main suite (CI renders
 `assets/benchmarks.svg`):
 
@@ -262,6 +268,28 @@ Where velxodb loses, stated plainly:
   where sled uses 66 MB for the same keys.
 - **Concurrency.** isar supports multi-isolate/MVCC access; velxodb is
   single-writer, single-isolate today.
+
+### How fair are these numbers?
+
+They are real harness output, but not every row is a same-condition comparison:
+
+- **velxodb read/query phases run before a flush.** They read the mutable
+  memtable (open-addressed hash table), while isar and sled serve through their
+  storage engines. This inflates velxodb's read and index-query lead.
+- **isar import uses one awaited `put` per document**, not `putAll`; that adds
+  100k async round-trips to its import number.
+- **Return types differ.** velxodb returns zero-copy bytes/views; isar
+  materializes `Doc` objects. Part of the query gap is API semantics.
+- **Single run, warm cache, no cold-read phase.** The comparison suite is not a
+  statistical benchmark.
+- **Closed ranges on both sides** (12k hits), because isar 3.4.1 returns zero
+  rows for an exclusive-upper string range.
+- **Engine values differ slightly**: 117 B VXS documents vs sled's 130 B blobs.
+
+The honest reading: velxodb's zero-copy format, batching and simple memtable are
+fast on this path, but the current cards overstate the margin. The next harness
+revision flushes and reopens before read phases, uses `putAll` for isar and adds
+cold reads; the charts will be regenerated then.
 
 Object-store engine, simulated with request/byte accounting:
 
