@@ -22,5 +22,7 @@ export 'src/storage/file.dart';
 export 'src/storage/io/storage_io.dart';
 export 'src/storage/manifest.dart';
 export 'src/storage/memtable.dart';
+export 'src/storage/object_engine.dart';
+export 'src/storage/object_store.dart';
 export 'src/storage/segment.dart';
 export 'src/storage/wal.dart';

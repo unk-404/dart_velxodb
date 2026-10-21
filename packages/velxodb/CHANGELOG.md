@@ -86,4 +86,11 @@
   (~1.9M links/s, ~1.2M adjacency queries/s), `walk` does a depth-limited BFS
   across selected or all relations, and `danglingEdges` finds edges whose target
   document is gone.
+- Object storage: a generic `ObjectStore` SPI (`get`/`put`/`delete`/`deleteMany`/
+  `list`), `SimulatedObjectStore` with request/byte counters, and an
+  `ObjectStoreEngine` whose segments and manifest are objects, whose write
+  batches are WAL objects, and whose segments are fetched lazily through an LRU
+  cache. Benchmark (`benchmark/s3_bench.dart`): 200k-doc import in 412 requests,
+  churn of 120k changes in 123 requests, reopen in 2 requests.
+- README rewritten.
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).
