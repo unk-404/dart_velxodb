@@ -193,7 +193,7 @@ Pre-alpha, usable end to end on the VM.
 | Read-only opens + shared reader locks | done |
 | Full backup/restore | done |
 | Full-text and n-gram primitives | done |
-| Web (OPFS) async DB: CRUD/scan/indexes/tx/refs | done; graph/text next |
+| Web (OPFS) async DB: CRUD/scan/indexes/tx/refs/graph | done; full-text next |
 | Mongo-style client facade | planned |
 | Vector / geo field types | planned |
 
@@ -240,10 +240,10 @@ The OPFS store keeps a crash-safe append-only key index so `list` works without
 walking OPFS; each object is a blit logical file (chunked, sparse, worker pool).
 This async facade covers collections, document CRUD, ordered scans, key-cursor
 pages, secondary indexes (equality and range), write transactions (one WAL
-object for documents plus index maintenance) and reference bindings with
-`restrict`/`cascade` enforcement. Graph and full-text over OPFS are the next
-step. Chrome tests cover the adapter, engine reopen, CRUD, indexes, transactions
-and references.
+object for documents plus index maintenance), reference bindings with
+`restrict`/`cascade` enforcement, and typed graph edges with BFS walks. Full-text
+over OPFS is the next step. Chrome tests cover the adapter, engine reopen, CRUD,
+indexes, transactions, references and graph.
 
 ### Queries
 
@@ -482,8 +482,8 @@ Remaining, in order:
 2. **Index-range performance** — isar is still about 1.25x faster on the
    12k-hit range benchmark; close it with a covering index or cheaper document
    fetch, then add the engine-level KV range cursor.
-3. **Web feature parity** — CRUD/scan/indexes/transactions/references are
-   Chrome-tested; graph and full-text over OPFS remain, then wasm smoke.
+3. **Web feature parity** — CRUD/scan/indexes/transactions/references/graph are
+   Chrome-tested; full-text over OPFS remains, then wasm smoke.
 4. **Mongo-style facade** over the existing query layer.
 5. **Docs site and runnable examples**, plus long-running stress/fuzz jobs.
 

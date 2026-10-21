@@ -5,6 +5,7 @@ import 'package:blit/blit.dart';
 
 import '../errors.dart';
 import '../query/catalog.dart';
+import '../query/graph.dart';
 import '../query/index.dart';
 import '../query/reference.dart';
 import '../serde/builder.dart';
@@ -74,6 +75,11 @@ final class VelxoWebDatabase {
     return null;
   }
 
+  /// Async graph over the same objects.
+  WebGraph get graph => _graph ??= WebGraph._(this, _engine);
+
+  WebGraph? _graph;
+
   /// Flushes the memtable into an object-store segment.
   Future<void> flush() async {
     await _engine.flush();
@@ -110,6 +116,9 @@ final class WebCollection {
   final VelxoWebDatabase _db;
   final ObjectStoreEngine _engine;
   final int _id;
+
+  /// Stable collection id.
+  int get id => _id;
 
   Uint8List _key(Uint8List key) {
     final out = Uint8List(2 + key.length);
@@ -394,7 +403,165 @@ final class WebCollection {
   }
 }
 
-/// Buffered async transaction over OPFS.
+/// Async typed graph over OPFS.
+final class WebGraph {
+  WebGraph._(this._db, this._engine);
+
+  static final Bytes _empty = DocBuilder(schemaId: 1).finish();
+
+  final VelxoWebDatabase _db;
+  final ObjectStoreEngine _engine;
+
+  /// Registers (or resolves) a relation id.
+  Future<int> relationId(String relation) async {
+    var id = _db._catalog.relationIdOf(relation);
+    if (id == null) {
+      _db._catalog = _db._catalog.withRelation(relation);
+      await _db._saveCatalog();
+      id = _db._catalog.relationIdOf(relation)!;
+    }
+    return id;
+  }
+
+  /// Links two nodes in one WAL object (forward + reverse edge).
+  Future<void> link(
+    String relation,
+    NodeRef from,
+    NodeRef to, {
+    Bytes? properties,
+  }) async {
+    final id = await relationId(relation);
+    final props = (properties ?? _empty).asUint8List();
+    final fromBytes = from.encode();
+    final toBytes = to.encode();
+    await _engine.applyBatch(<WalOp>[
+      WalOp.put(_edgeKey(id, 1, fromBytes, toBytes), props),
+      WalOp.put(_edgeKey(id, 2, toBytes, fromBytes), props),
+    ]);
+  }
+
+  /// Removes both directions of an edge.
+  Future<void> unlink(String relation, NodeRef from, NodeRef to) async {
+    final id = _db._catalog.relationIdOf(relation);
+    if (id == null) return;
+    final fromBytes = from.encode();
+    final toBytes = to.encode();
+    await _engine.applyBatch(<WalOp>[
+      WalOp.delete(_edgeKey(id, 1, fromBytes, toBytes)),
+      WalOp.delete(_edgeKey(id, 2, toBytes, fromBytes)),
+    ]);
+  }
+
+  /// Outgoing edges of [node].
+  Future<List<GraphEdge>> outgoing(String relation, NodeRef node) =>
+      _scan(relation, node, EdgeDirection.outbound);
+
+  /// Incoming edges of [node].
+  Future<List<GraphEdge>> incoming(String relation, NodeRef node) =>
+      _scan(relation, node, EdgeDirection.inbound);
+
+  /// Breadth-first walk, capped at [maxDepth].
+  Future<GraphWalk> walk(
+    NodeRef start, {
+    int maxDepth = 2,
+    Set<String>? relations,
+    EdgeDirection direction = EdgeDirection.outbound,
+  }) async {
+    final names = relations ??
+        <String>[
+          for (final relation in _db._catalog.relations) relation.name,
+        ];
+    final visited = <NodeRef>{start};
+    final levels = <List<NodeRef>>[
+      <NodeRef>[start],
+    ];
+    var frontier = <NodeRef>[start];
+    for (var depth = 1; depth <= maxDepth; depth++) {
+      final next = <NodeRef>[];
+      for (final node in frontier) {
+        for (final name in names) {
+          final edges = await _scan(name, node, direction);
+          for (final edge in edges) {
+            final neighbour =
+                direction == EdgeDirection.outbound ? edge.to : edge.from;
+            if (visited.add(neighbour)) next.add(neighbour);
+          }
+        }
+      }
+      if (next.isEmpty) break;
+      levels.add(next);
+      frontier = next;
+    }
+    return GraphWalk(
+      levels: levels,
+      truncated: levels.length - 1 == maxDepth && frontier.isNotEmpty,
+    );
+  }
+
+  Future<List<GraphEdge>> _scan(
+    String relation,
+    NodeRef node,
+    EdgeDirection direction,
+  ) async {
+    final id = _db._catalog.relationIdOf(relation);
+    if (id == null) return const <GraphEdge>[];
+    final nodeBytes = node.encode();
+    final prefix = Uint8List(3 + 2 + nodeBytes.length);
+    prefix[0] = (id >> 8) & 0xFF;
+    prefix[1] = id & 0xFF;
+    prefix[2] = direction == EdgeDirection.outbound ? 1 : 2;
+    prefix[3] = (nodeBytes.length >> 8) & 0xFF;
+    prefix[4] = nodeBytes.length & 0xFF;
+    prefix.setRange(5, prefix.length, nodeBytes);
+    final entries = await _engine.scanRange(
+      start: prefix,
+      end: _upper(prefix),
+    );
+    final edges = <GraphEdge>[];
+    for (final entry in entries) {
+      final other = NodeRef.decode(
+        Uint8List.sublistView(entry.key, 5 + nodeBytes.length),
+      );
+      edges.add(
+        GraphEdge(
+          relation: relation,
+          from: direction == EdgeDirection.outbound ? node : other,
+          to: direction == EdgeDirection.outbound ? other : node,
+          properties: entry.document!,
+        ),
+      );
+    }
+    return edges;
+  }
+
+  static Uint8List _edgeKey(
+    int relationId,
+    int direction,
+    Uint8List known,
+    Uint8List other,
+  ) {
+    final out = Uint8List(3 + 2 + known.length + other.length);
+    out[0] = (relationId >> 8) & 0xFF;
+    out[1] = relationId & 0xFF;
+    out[2] = direction;
+    out[3] = (known.length >> 8) & 0xFF;
+    out[4] = known.length & 0xFF;
+    out.setRange(5, 5 + known.length, known);
+    out.setRange(5 + known.length, out.length, other);
+    return out;
+  }
+}
+
+Uint8List? _upper(Uint8List prefix) {
+  final out = Uint8List.fromList(prefix);
+  for (var i = out.length - 1; i >= 0; i--) {
+    if (out[i] != 0xFF) {
+      out[i]++;
+      return Uint8List.sublistView(out, 0, i + 1);
+    }
+  }
+  return null;
+}
 ///
 /// Document and index mutations share one WAL object, so the commit is atomic
 /// at the object store level. Reads see the transaction's own writes.

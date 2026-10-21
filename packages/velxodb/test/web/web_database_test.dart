@@ -144,4 +144,33 @@ void main() {
     expect(await messages.get(key('m1')), isNull);
     await db.close();
   });
+
+  test('web graph links, adjacency and walk', () async {
+    final root = 'velxodb-graph-${DateTime.now().microsecondsSinceEpoch}';
+    final db = await VelxoWebDatabase.open(root: root);
+    final users = await db.collection('users');
+    await users.put(key('u1'), doc('one'));
+    await users.put(key('u2'), doc('two'));
+    await users.put(key('u3'), doc('three'));
+
+    final u1 = NodeRef(users.id, key('u1'));
+    final u2 = NodeRef(users.id, key('u2'));
+    final u3 = NodeRef(users.id, key('u3'));
+    await db.graph.link('follows', u1, u2);
+    await db.graph.link('follows', u2, u3);
+
+    final out = await db.graph.outgoing('follows', u1);
+    expect(out, hasLength(1));
+    expect(out.first.to, u2);
+    final incoming = await db.graph.incoming('follows', u3);
+    expect(incoming.first.from, u2);
+
+    final walk = await db.graph.walk(u1, maxDepth: 2);
+    expect(walk.levels, hasLength(3));
+    expect(walk.levels[2], <NodeRef>[u3]);
+
+    await db.graph.unlink('follows', u1, u2);
+    expect(await db.graph.outgoing('follows', u1), isEmpty);
+    await db.close();
+  });
 }

@@ -194,6 +194,9 @@
   indexes it, validates targets on put and enforces `restrict`/`cascade` on
   delete by reverse index lookup. Chrome tests cover a missing target, restrict
   and cascade.
+- Web/OPFS graph: `db.graph` links forward and reverse edges in one WAL object,
+  scans adjacency by prefix, and performs depth-capped BFS walks. Chrome tests
+  cover link/outgoing/incoming/walk/unlink.
 - Single-writer lock now also works on POSIX: an in-process registry of
   canonical paths complements the OS lock, which is process-wide there, so a
   second open inside the same process is rejected on Linux and macOS too.
