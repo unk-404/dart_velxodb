@@ -7,7 +7,7 @@ const spec = ModelSpec(
   keyField: 'id',
   fields: <FieldSpec>[
     FieldSpec('id', 1, FieldKind.string),
-    FieldSpec('senderId', 2, FieldKind.string, indexed: true),
+    FieldSpec('senderId', 2, FieldKind.string, indexed: true, target: 'users'),
     FieldSpec('createdAt', 3, FieldKind.int64, indexed: true),
     FieldSpec('edited', 4, FieldKind.boolean, nullable: true),
   ],
@@ -38,6 +38,16 @@ void main() {
       final source = generateModel(spec);
       expect(source, contains('createIndex(_senderIdId, VxsType.string)'));
       expect(source, contains('createIndex(_createdAtId, VxsType.int64)'));
+    });
+
+    test('emits reference bindings for target fields', () {
+      final source = generateModel(spec);
+      expect(
+        source,
+        contains(
+          "createReference(_senderIdId, 'users', onDelete: OnDelete.restrict)",
+        ),
+      );
     });
 
     test('rejects a non-string key field', () {

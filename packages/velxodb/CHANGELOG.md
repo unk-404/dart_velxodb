@@ -75,4 +75,9 @@
   can read old documents, and `collection.migrateSync` / `migratePageSync` apply
   a validated version chain with resumable pages, idempotent re-runs and
   byte-preserving `copyFields` for unknown fields.
+- Reference bindings: `collection.createReference(fieldId, 'target')` persists
+  `(source, field, target, onDelete)` in catalog v3, creates the reverse index
+  and applies `restrict` (default) or `cascade` when a target is deleted.
+  Optional `enforceReferences` verifies targets on write. A document and all of
+  its index entries now commit in one WAL frame via `engine.applyBatchSync`.
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).

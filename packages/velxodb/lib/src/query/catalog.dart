@@ -5,12 +5,13 @@ import '../serde/schema.dart';
 import '../serde/vxs.dart';
 import '../storage/directory.dart';
 import 'index.dart';
+import 'reference.dart';
 
 /// First byte of the catalog file.
 const int catalogMagic = 0x43;
 
 /// Catalog format version written by this build.
-const int catalogVersion = 2;
+const int catalogVersion = 3;
 
 /// Name of the catalog file.
 const String catalogFileName = 'CATALOG';
@@ -34,20 +35,28 @@ final class CollectionEntry {
 /// own id from the same space and use it as their namespace prefix.
 final class Catalog {
   /// Creates a catalog.
-  Catalog(List<CollectionEntry> entries, [List<IndexDefinition> indexes = const []])
-    : entries = List<CollectionEntry>.unmodifiable(entries),
-      indexes = List<IndexDefinition>.unmodifiable(indexes);
+  Catalog(
+    List<CollectionEntry> entries, [
+    List<IndexDefinition> indexes = const [],
+    List<ReferenceDefinition> references = const [],
+  ]) : entries = List<CollectionEntry>.unmodifiable(entries),
+       indexes = List<IndexDefinition>.unmodifiable(indexes),
+       references = List<ReferenceDefinition>.unmodifiable(references);
 
   /// An empty catalog.
   Catalog.empty()
     : entries = const <CollectionEntry>[],
-      indexes = const <IndexDefinition>[];
+      indexes = const <IndexDefinition>[],
+      references = const <ReferenceDefinition>[];
 
   /// Registered collections.
   final List<CollectionEntry> entries;
 
   /// Registered secondary indexes.
   final List<IndexDefinition> indexes;
+
+  /// Registered reference bindings.
+  final List<ReferenceDefinition> references;
 
   /// Finds the id of [name], or `null`.
   int? idOf(String name) {
@@ -89,7 +98,7 @@ final class Catalog {
     return Catalog(<CollectionEntry>[
       ...entries,
       CollectionEntry(next, name),
-    ], indexes);
+    ], indexes, references);
   }
 
   /// Returns a catalog with an index added for `(collectionId, fieldId)`.
@@ -108,6 +117,36 @@ final class Catalog {
         type: type,
         indexId: next,
       ),
+    ], references);
+  }
+
+  /// Finds the reference for `(collectionId, fieldId)`, or `null`.
+  ReferenceDefinition? referenceFor(int collectionId, int fieldId) {
+    for (final reference in references) {
+      if (reference.sourceCollectionId == collectionId &&
+          reference.fieldId == fieldId) {
+        return reference;
+      }
+    }
+    return null;
+  }
+
+  /// Returns a catalog with a reference binding added.
+  Catalog withReference(
+    int sourceCollectionId,
+    int fieldId,
+    int targetCollectionId,
+    OnDelete onDelete,
+  ) {
+    if (referenceFor(sourceCollectionId, fieldId) != null) return this;
+    return Catalog(entries, indexes, <ReferenceDefinition>[
+      ...references,
+      ReferenceDefinition(
+        sourceCollectionId: sourceCollectionId,
+        fieldId: fieldId,
+        targetCollectionId: targetCollectionId,
+        onDelete: onDelete,
+      ),
     ]);
   }
 
@@ -118,6 +157,7 @@ final class Catalog {
       size += 4 + entry.name.length;
     }
     size += 4 + indexes.length * 7;
+    size += 4 + references.length * 7;
     final out = Uint8List(size);
     out[0] = catalogMagic;
     out[1] = catalogVersion;
@@ -144,6 +184,17 @@ final class Catalog {
       VxsLe.w16(out, pos, index.indexId);
       pos += 2;
     }
+    VxsLe.w32(out, pos, references.length);
+    pos += 4;
+    for (final reference in references) {
+      VxsLe.w16(out, pos, reference.sourceCollectionId);
+      pos += 2;
+      VxsLe.w16(out, pos, reference.fieldId);
+      pos += 2;
+      VxsLe.w16(out, pos, reference.targetCollectionId);
+      pos += 2;
+      out[pos++] = _onDeleteCode(reference.onDelete);
+    }
     VxsLe.w32(out, pos, VxsCrc32c.compute(out, 0, pos));
     return out;
   }
@@ -157,7 +208,7 @@ final class Catalog {
       throw const VxsFormatException('bad catalog header');
     }
     final version = bytes[1];
-    if (version != 1 && version != catalogVersion) {
+    if (version < 1 || version > catalogVersion) {
       throw VxsFormatException('unsupported catalog version $version');
     }
     final bodyEnd = bytes.length - 4;
@@ -213,10 +264,41 @@ final class Catalog {
         );
       }
     }
+    final references = <ReferenceDefinition>[];
+    if (version >= 3) {
+      if (pos + 4 > bodyEnd) {
+        throw const VxsFormatException('truncated catalog reference list');
+      }
+      final referenceCount = VxsLe.u32(bytes, pos);
+      pos += 4;
+      for (var i = 0; i < referenceCount; i++) {
+        if (pos + 7 > bodyEnd) {
+          throw const VxsFormatException('truncated catalog reference');
+        }
+        final source = VxsLe.u16(bytes, pos);
+        pos += 2;
+        final fieldId = VxsLe.u16(bytes, pos);
+        pos += 2;
+        final target = VxsLe.u16(bytes, pos);
+        pos += 2;
+        final code = bytes[pos++];
+        if (code > OnDelete.setNull.index) {
+          throw VxsFormatException('unknown onDelete code $code');
+        }
+        references.add(
+          ReferenceDefinition(
+            sourceCollectionId: source,
+            fieldId: fieldId,
+            targetCollectionId: target,
+            onDelete: OnDelete.values[code],
+          ),
+        );
+      }
+    }
     if (pos != bodyEnd) {
       throw const VxsFormatException('trailing bytes in catalog');
     }
-    return Catalog(entries, indexes);
+    return Catalog(entries, indexes, references);
   }
 }
 
@@ -257,3 +339,9 @@ final class CatalogStore {
     directory.renameSync(_tempName, catalogFileName);
   }
 }
+
+int _onDeleteCode(OnDelete value) => switch (value) {
+  OnDelete.restrict => 0,
+  OnDelete.cascade => 1,
+  OnDelete.setNull => 2,
+};

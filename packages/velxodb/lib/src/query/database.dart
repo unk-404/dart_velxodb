@@ -5,13 +5,14 @@ import '../storage/io/storage_io.dart';
 import 'catalog.dart';
 import 'collection.dart';
 import 'index.dart';
+import 'reference.dart';
 
 /// An embedded database: one directory, one engine, many collections.
 ///
 /// The catalog assigns each collection a stable two-byte prefix so a single
-/// key/value engine can host all of them without colliding, and allocates the
-/// same kind of prefix to secondary indexes.
-final class VelxoDatabase implements IndexCatalog {
+/// key/value engine can host all of them without colliding, allocates the same
+/// kind of prefix to secondary indexes, and records reference bindings.
+final class VelxoDatabase implements CollectionCatalog {
   VelxoDatabase._(this._directory, this._engine, this._catalog)
     : _catalogStore = CatalogStore(_directory);
 
@@ -75,6 +76,46 @@ final class VelxoDatabase implements IndexCatalog {
     _catalog = _catalog.withIndex(collectionId, fieldId, type);
     _catalogStore.saveSync(_catalog);
     return _catalog.indexFor(collectionId, fieldId)!;
+  }
+
+  @override
+  int? collectionIdOf(String name) => _catalog.idOf(name);
+
+  @override
+  ReferenceDefinition? referenceFor(int collectionId, int fieldId) =>
+      _catalog.referenceFor(collectionId, fieldId);
+
+  @override
+  List<ReferenceDefinition> referencesFor(int collectionId) =>
+      <ReferenceDefinition>[
+        for (final reference in _catalog.references)
+          if (reference.sourceCollectionId == collectionId) reference,
+      ];
+
+  @override
+  List<ReferenceDefinition> referencesTo(int collectionId) =>
+      <ReferenceDefinition>[
+        for (final reference in _catalog.references)
+          if (reference.targetCollectionId == collectionId) reference,
+      ];
+
+  @override
+  ReferenceDefinition registerReference(
+    int sourceCollectionId,
+    int fieldId,
+    int targetCollectionId,
+    OnDelete onDelete,
+  ) {
+    final existing = _catalog.referenceFor(sourceCollectionId, fieldId);
+    if (existing != null) return existing;
+    _catalog = _catalog.withReference(
+      sourceCollectionId,
+      fieldId,
+      targetCollectionId,
+      onDelete,
+    );
+    _catalogStore.saveSync(_catalog);
+    return _catalog.referenceFor(sourceCollectionId, fieldId)!;
   }
 
   /// Flushes the memtable into a segment.

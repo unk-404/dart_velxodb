@@ -18,6 +18,15 @@ enum FieldKind {
   boolean,
 }
 
+/// What happens to referring documents when a referenced document is deleted.
+enum ReferenceAction {
+  /// Refuse the delete.
+  restrict,
+
+  /// Delete referring documents.
+  cascade,
+}
+
 /// Declares one field of a generated model.
 final class FieldSpec {
   /// Creates a field spec.
@@ -28,6 +37,8 @@ final class FieldSpec {
     this.indexed = false,
     this.nullable = false,
     this.defaultValue,
+    this.target,
+    this.onDelete = ReferenceAction.restrict,
   });
 
   /// Dart property name, also the document field name.
@@ -44,6 +55,14 @@ final class FieldSpec {
 
   /// Whether the field may be null.
   final bool nullable;
+
+  /// Collection this field references, when it is a reference.
+  ///
+  /// A reference is always indexed (the index is the reverse lookup).
+  final String? target;
+
+  /// Delete behaviour for a reference field.
+  final ReferenceAction onDelete;
 
   /// Value substituted when an older document does not have this field.
   ///
@@ -203,6 +222,17 @@ String generateModel(ModelSpec spec) {
         '    collection.createIndex(_${field.name}Id, ${_vxsType(field)});',
       );
     }
+  }
+  for (final field in fields) {
+    final target = field.target;
+    if (target == null) continue;
+    final action = field.onDelete == ReferenceAction.cascade
+        ? 'cascade'
+        : 'restrict';
+    out.writeln(
+      "    collection.createReference(_${field.name}Id, '$target', "
+      'onDelete: OnDelete.$action);',
+    );
   }
   out.writeln('  }');
   out.writeln();

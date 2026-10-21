@@ -238,6 +238,45 @@ void main() {
       expect(engine.segments, hasLength(1));
     });
 
+    test('batch writes are atomic: a torn frame loses the whole batch', () {
+      final directory = MemoryStorageDirectory();
+      final engine = openEngine(directory);
+      engine.applyBatchSync(<WalOp>[
+        WalOp.put(k('a'), doc('alpha').asUint8List()),
+        WalOp.put(k('b'), doc('beta').asUint8List()),
+      ]);
+      engine.syncNow();
+      expect(engine.get(k('a')), isNotNull);
+      expect(engine.get(k('b')), isNotNull);
+
+      final complete = Uint8List.fromList(walFileOf(directory).bytes);
+      // Cut inside the frame: replay must drop it as a whole.
+      final torn = MemoryStorageDirectory();
+      torn
+          .openSync(StorageEngine.walFileName)
+          .writeAllSync(Uint8List.sublistView(complete, 0, complete.length - 4));
+
+      final recovered = openEngine(torn);
+      expect(recovered.get(k('a')), isNull);
+      expect(recovered.get(k('b')), isNull);
+    });
+
+    test('batch deletes are atomic too', () {
+      final directory = MemoryStorageDirectory();
+      final engine = openEngine(directory);
+      engine.putSync(k('a'), doc('alpha'));
+      engine.putSync(k('b'), doc('beta'));
+      engine.applyBatchSync(<WalOp>[
+        WalOp.delete(k('a')),
+        WalOp.delete(k('b')),
+      ]);
+      engine.syncNow();
+
+      final reopened = openEngine(directory);
+      expect(reopened.get(k('a')), isNull);
+      expect(reopened.get(k('b')), isNull);
+    });
+
     test('sync flushes and close rejects further writes', () async {
       final directory = MemoryStorageDirectory();
       final engine = openEngine(directory);

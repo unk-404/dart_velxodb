@@ -7,6 +7,7 @@ import '../serde/schema.dart';
 import '../serde/view.dart';
 import 'collection.dart';
 import 'plan.dart';
+import 'reference.dart';
 
 /// One field of a typed document.
 ///
@@ -22,7 +23,28 @@ final class Field {
     required this.decode,
     this.indexed = false,
     this.nullable = false,
+    this.target,
+    this.onDelete,
   });
+
+  /// A reference field pointing at [target]'s key.
+  factory Field.reference(
+    int id,
+    String name, {
+    required String target,
+    OnDelete onDelete = OnDelete.restrict,
+    bool nullable = false,
+  }) => Field(
+    id: id,
+    name: name,
+    type: VxsType.string,
+    indexed: true,
+    nullable: nullable,
+    target: target,
+    onDelete: onDelete,
+    encode: (builder, value) => builder.putString(id, value as String),
+    decode: (view) => view.getString(id),
+  );
 
   /// A UTF-8 string field.
   factory Field.string(
@@ -86,6 +108,12 @@ final class Field {
 
   /// Whether `null` is a meaningful value rather than "absent".
   final bool nullable;
+
+  /// Target collection name when this field is a reference.
+  final String? target;
+
+  /// Delete behaviour for a reference field.
+  final OnDelete? onDelete;
 
   /// Writes [value] into [builder].
   final void Function(DocBuilder builder, Object? value) encode;
@@ -152,7 +180,7 @@ final class TypedCollection<T> {
     this.decodeValue, {
     this.schemaId = 1,
     this.version = 1,
-  });
+  }) : schema = null;
 
   /// Wraps [collection] with a [DocumentSchema].
   TypedCollection.schema(
@@ -160,11 +188,15 @@ final class TypedCollection<T> {
     DocumentSchema<T> schema, {
     this.schemaId = 1,
     this.version = 1,
-  }) : encodeValue = ((value, builder) => schema.write(value, builder)),
+  }) : schema = schema,
+       encodeValue = ((value, builder) => schema.write(value, builder)),
        decodeValue = schema.read;
 
   /// Underlying untyped collection.
   final Collection collection;
+
+  /// Schema this handle was opened with, when using [TypedCollection.schema].
+  final DocumentSchema<T>? schema;
 
   /// Writes a model into a builder.
   final void Function(T value, DocBuilder builder) encodeValue;
@@ -177,6 +209,28 @@ final class TypedCollection<T> {
 
   /// Schema version stored in the document header.
   final int version;
+
+  /// Creates the indexes and reference bindings declared by [schema].
+  ///
+  /// Generated code emits its own equivalent; this is for hand-written schemas.
+  void ensureIndexes() {
+    final source = schema;
+    if (source == null) {
+      throw StateError('this handle has no DocumentSchema; call ensureIndexes '
+          'through the generated open() instead');
+    }
+    for (final field in source.fields) {
+      if (field.indexed) collection.createIndex(field.id, field.type);
+      final target = field.target;
+      if (target != null) {
+        collection.createReference(
+          field.id,
+          target,
+          onDelete: field.onDelete ?? OnDelete.restrict,
+        );
+      }
+    }
+  }
 
   /// Reads [key], or `null`.
   T? getSync(Uint8List key) {

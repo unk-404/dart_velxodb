@@ -17,6 +17,7 @@ void main() {
   setUp(() {
     root = Directory.systemTemp.createTempSync('velxo_typed_');
     db = VelxoDatabase.openSync(root.path);
+    db.collection('users'); // senderId references it
     messages = ChatMessage.open(db);
   });
 

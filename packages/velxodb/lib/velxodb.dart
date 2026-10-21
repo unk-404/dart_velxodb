@@ -17,6 +17,8 @@ export 'src/query/migration.dart'
     show CollectionMigration, MigrationReport, MigrationStep, copyFields;
 export 'src/query/plan.dart'
     show Predicate, Query, QueryPlan, ScanStrategy;
+export 'src/query/reference.dart'
+    show CollectionCatalog, OnDelete, ReferenceCatalog, ReferenceDefinition;
 export 'src/query/schema.dart'
     show DocumentSchema, Field, TypedCollection;
 export 'src/query/types.dart' show ScanEntry, ScanPage;

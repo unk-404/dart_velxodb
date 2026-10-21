@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:blit/blit.dart';
@@ -6,9 +7,11 @@ import '../serde/builder.dart';
 import '../serde/schema.dart';
 import '../serde/view.dart';
 import '../storage/engine.dart';
+import '../storage/wal.dart';
 import 'cursor.dart';
 import 'index.dart';
 import 'plan.dart';
+import 'reference.dart';
 import 'types.dart';
 
 /// A named namespace of documents inside a database.
@@ -19,14 +22,18 @@ import 'types.dart';
 /// lets segment index range scans work.
 ///
 /// Secondary indexes live in the same engine under their own two-byte id, with
-/// entries shaped `[indexId][encodedValue][primaryKey]`.
+/// entries shaped `[indexId][encodedValue][primaryKey]`. A document and its
+/// index entries are written in one WAL frame, so they commit together.
 final class Collection {
   /// Creates a collection handle. Use [VelxoDatabase.collection] instead.
-  Collection(this.engine, this.id, this.name, {IndexCatalog? catalog})
+  Collection(this.engine, this.id, this.name, {CollectionCatalog? catalog})
     : _catalog = catalog {
     if (catalog != null) {
       for (final definition in catalog.indexesFor(id)) {
         _indexes[definition.fieldId] = definition;
+      }
+      for (final reference in catalog.referencesFor(id)) {
+        _references[reference.fieldId] = reference;
       }
     }
   }
@@ -40,52 +47,89 @@ final class Collection {
   /// Collection name.
   final String name;
 
-  final IndexCatalog? _catalog;
+  final CollectionCatalog? _catalog;
   final Map<int, IndexDefinition> _indexes = <int, IndexDefinition>{};
+  final Map<int, ReferenceDefinition> _references = <int, ReferenceDefinition>{};
+
+  /// Whether writes verify that referenced documents exist.
+  ///
+  /// Off by default: enforcement costs one point read per reference field.
+  bool enforceReferences = false;
 
   static final Bytes _emptyDocument = DocBuilder().finish();
 
   /// Declared secondary indexes by field id.
   Map<int, IndexDefinition> get indexes => Map.unmodifiable(_indexes);
 
+  /// Declared reference bindings by field id.
+  Map<int, ReferenceDefinition> get references => Map.unmodifiable(_references);
+
   /// Reads [key], or `null` when absent or deleted.
   Bytes? get(Uint8List key) => engine.get(composeKey(key));
 
-  /// Inserts or replaces [key], maintaining every secondary index.
+  /// Inserts or replaces [key], maintaining indexes and references.
+  ///
+  /// The document and every derived entry go into one WAL frame, so a crash
+  /// cannot leave an index entry pointing at a document that was never written.
   void putSync(Uint8List key, Bytes document) {
     final full = composeKey(key);
     final old = engine.get(full);
     final oldView = old == null ? null : DocView.parse(old.asUint8List());
     final newView = DocView.parse(document.asUint8List());
-    engine.putSync(full, document);
-    _updateIndexes(key, oldView, newView);
+    _checkReferences(newView);
+    final ops = <WalOp>[WalOp.put(full, document.asUint8List())];
+    _collectIndexOps(ops, key, oldView, newView);
+    engine.applyBatchSync(ops);
   }
 
   /// Async facade over [putSync].
   Future<void> put(Uint8List key, Bytes document) async =>
       putSync(key, document);
 
-  /// Inserts or replaces several documents, maintaining every secondary index.
+  /// Inserts or replaces several documents.
   ///
-  /// Index maintenance needs the previous document, so this cannot use the
-  /// engine's single-frame batch write yet.
+  /// Each document is atomic on its own; batching across documents needs the
+  /// previous value of every key, so it stays a loop for now.
   void putManySync(List<ScanEntry> entries) {
     for (final entry in entries) {
       putSync(entry.key, entry.value);
     }
   }
 
-  /// Deletes [key], removing its secondary index entries.
-  void deleteSync(Uint8List key) {
-    final full = composeKey(key);
-    final old = engine.get(full);
-    final oldView = old == null ? null : DocView.parse(old.asUint8List());
-    engine.deleteSync(full);
-    if (oldView != null) _updateIndexes(key, oldView, null);
-  }
+  /// Deletes [key], removing index entries and applying reference policies.
+  void deleteSync(Uint8List key) => _deleteInternal(key, <String>{}, 0);
 
   /// Async facade over [deleteSync].
   Future<void> delete(Uint8List key) async => deleteSync(key);
+
+  /// Creates a reference binding from [fieldId] to the [targetName] collection.
+  ///
+  /// The field must hold the target's key as a UTF-8 string; a secondary index
+  /// on it is created (or reused) so reverse lookups are O(degree).
+  ReferenceDefinition createReference(
+    int fieldId,
+    String targetName, {
+    OnDelete onDelete = OnDelete.restrict,
+  }) {
+    final catalog = _catalog;
+    if (catalog == null) {
+      throw StateError('this collection handle has no catalog; '
+          'open it through VelxoDatabase.collection');
+    }
+    final targetId = catalog.collectionIdOf(targetName);
+    if (targetId == null) {
+      throw StateError('target collection "$targetName" does not exist');
+    }
+    final definition = catalog.registerReference(
+      id,
+      fieldId,
+      targetId,
+      onDelete,
+    );
+    _references[fieldId] = definition;
+    createIndex(fieldId, VxsType.string);
+    return definition;
+  }
 
   /// Creates (and backfills) a secondary index on [fieldId].
   IndexDefinition createIndex(int fieldId, VxsType type) {
@@ -373,7 +417,8 @@ final class Collection {
     return out;
   }
 
-  void _updateIndexes(
+  void _collectIndexOps(
+    List<WalOp> ops,
     Uint8List primaryKey,
     DocView? oldDocument,
     DocView? newDocument,
@@ -385,15 +430,96 @@ final class Collection {
       final newValue =
           newDocument == null ? null : definition.readValue(newDocument);
       if (oldValue != null && oldValue != newValue) {
-        engine.deleteSync(definition.entryKey(oldValue, primaryKey));
+        ops.add(WalOp.delete(definition.entryKey(oldValue, primaryKey)));
       }
       if (newValue != null && oldValue != newValue) {
-        engine.putSync(
-          definition.entryKey(newValue, primaryKey),
-          _emptyDocument,
+        ops.add(
+          WalOp.put(
+            definition.entryKey(newValue, primaryKey),
+            _emptyDocument.asUint8List(),
+          ),
         );
       }
     }
+  }
+
+  void _deleteInternal(Uint8List key, Set<String> visited, int depth) {
+    if (depth > 32) {
+      throw StateError('reference cascade exceeded depth 32');
+    }
+    if (!visited.add('$id:${String.fromCharCodes(key)}')) return;
+    final full = composeKey(key);
+    final old = engine.get(full);
+    if (old == null) {
+      engine.deleteSync(full);
+      return;
+    }
+    final oldView = DocView.parse(old.asUint8List());
+    _handleReferrers(key, visited, depth);
+    final ops = <WalOp>[WalOp.delete(full)];
+    _collectIndexOps(ops, key, oldView, null);
+    engine.applyBatchSync(ops);
+  }
+
+  void _handleReferrers(Uint8List key, Set<String> visited, int depth) {
+    final catalog = _catalog;
+    if (catalog == null) return;
+    final targetKey = utf8.decode(key);
+    for (final reference in catalog.referencesTo(id)) {
+      final source = _collectionById(reference.sourceCollectionId);
+      if (source == null) continue;
+      final referrers = source.lookupByIndexSync(reference.fieldId, targetKey);
+      if (referrers.isEmpty) continue;
+      switch (reference.onDelete) {
+        case OnDelete.restrict:
+          throw StateError(
+            'cannot delete document: ${referrers.length} document(s) in '
+            'collection ${reference.sourceCollectionId} still reference it '
+            'through field ${reference.fieldId}',
+          );
+        case OnDelete.cascade:
+          for (final entry in referrers) {
+            source._deleteInternal(entry.key, visited, depth + 1);
+          }
+        case OnDelete.setNull:
+          throw UnsupportedError(
+            'OnDelete.setNull needs a schema-aware rewrite and is not '
+            'implemented yet',
+          );
+      }
+    }
+  }
+
+  Collection? _collectionById(int collectionId) {
+    if (collectionId == id) return this;
+    final catalog = _catalog;
+    if (catalog == null) return null;
+    return Collection(engine, collectionId, '', catalog: catalog);
+  }
+
+  void _checkReferences(DocView document) {
+    if (!enforceReferences) return;
+    for (final reference in _references.values) {
+      final value = document.getString(reference.fieldId);
+      if (value == null) continue;
+      final targetKey = Uint8List.fromList(utf8.encode(value));
+      if (engine.get(composeKeyFor(reference.targetCollectionId, targetKey)) ==
+          null) {
+        throw StateError(
+          'missing referenced document "$value" in collection '
+          '${reference.targetCollectionId} (field ${reference.fieldId})',
+        );
+      }
+    }
+  }
+
+  /// Encodes [key] for an arbitrary collection id.
+  static Uint8List composeKeyFor(int collectionId, Uint8List key) {
+    final out = Uint8List(2 + key.length);
+    out[0] = (collectionId >> 8) & 0xFF;
+    out[1] = collectionId & 0xFF;
+    out.setRange(2, 2 + key.length, key);
+    return out;
   }
 
   void _backfill(IndexDefinition definition) {

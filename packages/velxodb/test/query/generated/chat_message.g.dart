@@ -93,6 +93,7 @@ final class ChatMessage {
     collection.createIndex(_conversationIdId, VxsType.string);
     collection.createIndex(_senderIdId, VxsType.string);
     collection.createIndex(_createdAtId, VxsType.int64);
+    collection.createReference(_senderIdId, 'users', onDelete: OnDelete.restrict);
   }
 
   /// Opens the typed collection and ensures declared indexes.

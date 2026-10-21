@@ -25,7 +25,7 @@ Bytes indexedMessage(int value) => (DocBuilder(schemaId: 1)
     .finish();
 
 /// In-memory catalog so the benchmark does not need a real directory.
-final class _StubCatalog implements IndexCatalog {
+final class _StubCatalog implements CollectionCatalog {
   final List<IndexDefinition> _definitions = <IndexDefinition>[];
 
   @override
@@ -56,6 +56,28 @@ final class _StubCatalog implements IndexCatalog {
     _definitions.add(definition);
     return definition;
   }
+
+  @override
+  int? collectionIdOf(String name) => null;
+
+  @override
+  ReferenceDefinition? referenceFor(int collectionId, int fieldId) => null;
+
+  @override
+  List<ReferenceDefinition> referencesFor(int collectionId) =>
+      const <ReferenceDefinition>[];
+
+  @override
+  List<ReferenceDefinition> referencesTo(int collectionId) =>
+      const <ReferenceDefinition>[];
+
+  @override
+  ReferenceDefinition registerReference(
+    int sourceCollectionId,
+    int fieldId,
+    int targetCollectionId,
+    OnDelete onDelete,
+  ) => throw UnsupportedError('no references in benchmarks');
 }
 
 void main() {

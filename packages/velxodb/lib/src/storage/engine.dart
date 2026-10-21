@@ -186,6 +186,25 @@ final class StorageEngine {
   /// Async facade over [deleteSync].
   Future<void> delete(Uint8List key) async => deleteSync(key);
 
+  /// Applies puts and deletes as one WAL frame.
+  ///
+  /// A crash either keeps the whole batch or none of it, which is what lets a
+  /// document and its derived entries (index, reverse reference) land together.
+  void applyBatchSync(List<WalOp> ops) {
+    _checkOpen();
+    if (ops.isEmpty) return;
+    _wal.appendBatchSync(ops);
+    for (final op in ops) {
+      if (op.kind == WalOpKind.put) {
+        final ref = _arena.append(op.value!);
+        _memtable.put(op.key, ref.chunk, ref.offset, ref.length);
+      } else {
+        _memtable.putTombstone(op.key);
+      }
+    }
+    _afterWrite();
+  }
+
   /// Reads [key], or `null` when absent, deleted, or shadowed by a tombstone.
   ///
   /// Views returned from a segment point into the segment's buffer; views from
