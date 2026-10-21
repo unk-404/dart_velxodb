@@ -8,6 +8,10 @@ analyzer:
     strict-casts: true
     strict-inference: true
     strict-raw-types: true
+  # benchmarks/compare/dart is a standalone package with its own pubspec and
+  # package config; it is analyzed separately in CI.
+  exclude:
+    - benchmarks/compare/**
   errors:
     todo: ignore
 

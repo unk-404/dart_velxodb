@@ -77,6 +77,22 @@ jobs:
         working-directory: packages/velxodb
         run: dart test -p chrome -j 1 test
 
+  crash:
+    name: crash matrix
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - name: Resolve workspace
+        run: dart pub get
+      # Every crash point: torn WAL frame byte, segment before manifest,
+      # manifest fallback, pre-truncate replay, corrupt segment.
+      - name: Run crash matrix
+        run: dart test packages/velxodb/test/crash -j 1 --chain-stack-traces
+
   bench:
     name: benchmark
     needs: [test, web, browser]
@@ -120,6 +136,9 @@ jobs:
       - name: Resolve comparison harness
         working-directory: benchmarks/compare/dart
         run: dart pub get
+      - name: Analyze comparison harness
+        working-directory: benchmarks/compare/dart
+        run: dart analyze --fatal-infos
       - name: Fetch isar core (Linux)
         run: |
           mkdir -p benchmarks/compare/dart/bin

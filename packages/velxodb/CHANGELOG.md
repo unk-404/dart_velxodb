@@ -121,5 +121,13 @@
 - Corruption handling: if manifest files exist but none decodes, opening now
   raises `VelxoCorruptException` instead of silently starting empty; a failed
   open releases the directory lock.
+- Crash-point matrix: deterministic tests tear every byte of a transaction WAL
+  frame, ignore a segment written before its manifest commit, fall back from a
+  torn newest manifest, replay the pre-truncate WAL idempotently, and report a
+  truncated referenced segment as `VelxoCorruptException`. Runs as its own CI
+  job.
+- `checkSync` no longer opens a second WAL handle (which closed the shared
+  handle in in-memory directories), and opening a segment that fails to decode
+  now raises `VelxoCorruptException`.
 - READMEs rewritten (workspace and package).
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).

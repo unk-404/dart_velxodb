@@ -10,3 +10,6 @@ dependencies:
   velxodb:
     path: ../../../packages/velxodb
   isar_community: ^3.4.1
+
+dev_dependencies:
+  lints: ^6.0.0

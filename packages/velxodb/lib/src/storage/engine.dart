@@ -148,10 +148,19 @@ final class StorageEngine {
         // Segments are immutable: map them instead of copying. The view stays
         // valid until close(), which unmaps after the engine stops serving.
         final mapped = _directory.mapSync(info.name);
-        _segmentMaps.add(mapped);
-        _segments.add(SegmentReader(mapped.bytes));
-        _segmentInfos.add(info);
-        _trackSegmentId(info.name);
+        try {
+          final reader = SegmentReader(mapped.bytes);
+          _segmentMaps.add(mapped);
+          _segments.add(reader);
+          _segmentInfos.add(info);
+          _trackSegmentId(info.name);
+        } on Object catch (error) {
+          mapped.closeSync();
+          throw VelxoCorruptException(
+            'segment ${info.name} is corrupt',
+            error,
+          );
+        }
       }
     }
     for (final name in _directory.listSync()) {
@@ -550,17 +559,9 @@ final class StorageEngine {
       }
     }
 
-    if (_directory.existsSync(walFileName)) {
-      SyncStorageFile? file;
-      try {
-        file = _directory.openSync(walFileName, create: false);
-        stats['walBytes'] = file.lengthSync;
-      } finally {
-        file?.closeSync();
-      }
-    } else {
-      stats['walBytes'] = 0;
-    }
+    // Use the engine's own WAL handle: opening a second handle and closing it
+    // would close the shared handle in in-memory directories.
+    stats['walBytes'] = _walFile.lengthSync;
     return CheckReport(issues, stats);
   }
 

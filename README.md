@@ -348,20 +348,20 @@ reopen                            0ms          2 (1/0/0/1)      0.0MB      0.0MB
 Already shipped: VXS format, WAL + segments + mmap, query layer, secondary
 indexes, typed collections, references, graph, full-text, object-store engine,
 transactions, single-writer lock, durability tiers, auto-flush, auto-compaction,
-integrity check and typed errors.
+integrity check, typed errors, and a deterministic crash-point matrix in CI
+(every byte of a torn transaction frame, segment-before-manifest, torn manifest
+fallback, pre-truncate replay, corrupt segment).
 
 Remaining, in order:
 
-1. **Crash-point matrix in CI** — cut power at every WAL/segment/manifest commit
-   point, reopen, assert the invariants.
-2. **Concurrency model** — an isolate worker (one writer, many readers) or an
+1. **Concurrency model** — an isolate worker (one writer, many readers) or an
    explicit single-isolate contract with a background flush/compaction thread.
-3. **Backup / restore** and read-only opens.
-4. **Engine-level KV range cursor**, so the storage tier has the same API surface
-   as sled.
-5. **Web storage** (OPFS in a worker) instead of the current stub.
-6. **Mongo-style facade** over the existing query layer.
-7. **Docs site and runnable examples**, plus long-running stress/fuzz jobs.
+2. **Backup / restore** and read-only opens.
+3. **Index-range performance** — isar is currently 1.6x faster on the 12k-hit
+   range benchmark; then the engine-level KV range cursor.
+4. **Web storage** (OPFS in a worker) instead of the current stub.
+5. **Mongo-style facade** over the existing query layer.
+6. **Docs site and runnable examples**, plus long-running stress/fuzz jobs.
 
 ## License
 
