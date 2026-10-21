@@ -34,6 +34,7 @@ export 'src/query/schema.dart'
     show DocumentSchema, Field, TypedCollection;
 export 'src/query/types.dart' show ScanEntry, ScanPage;
 export 'src/query/velxo.dart';
+export 'src/worker/worker_client.dart';
 
 /// Semantic version of the package.
 const String velxodbVersion = '0.1.0';

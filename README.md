@@ -105,13 +105,23 @@ download. The full breakdown is in the benchmark below.
 - **Graceful shutdown.** `db.close(flush: true)` writes a segment so the next
   open reads the manifest instead of replaying the log.
 
-Not yet provided: a multi-isolate worker, backup/restore, web support, the
-Mongo-style facade, storage-format migration, encryption, and geo/vector.
+Not yet provided: backup/restore, web storage, the Mongo-style facade,
+storage-format migration, encryption, and geo/vector.
 
 ### Concurrency contract
 
 - One open database belongs to one isolate. Reads and writes are synchronous
-  and single-writer; there is no cross-isolate sharing and no concurrent writer.
+  and single-writer; there is no shared memory between isolates.
+- `VelxoWorker.open(path)` runs the only `VelxoDatabase` in a dedicated worker
+  isolate and exposes an async RPC facade (`put`, `get`, `delete`, `page`,
+  `flush`, `check`, `waitForMaintenance`, `close`). Requests from any number of
+  client isolates are queued and executed one at a time by the worker, so the
+  single-writer contract holds while callers stay concurrent. Values cross the
+  boundary as copies, so zero-copy reads apply inside the worker.
+- Do not open the same path directly in the same process while a worker owns it:
+  POSIX `fcntl` locks are process-wide, so a direct open in another isolate is
+  not detected. Across processes the OS lock still applies. The worker client
+  rejects a second worker for the same path in one isolate.
 - `VelxoDatabase.openSync(deferredMaintenance: true)` moves the flush/compaction
   triggered by a threshold crossing off the write call: the write returns first,
   the segment is built on a `MaintenanceScheduler` (a microtask today). Memory
@@ -126,8 +136,6 @@ Mongo-style facade, storage-format migration, encryption, and geo/vector.
   writes stay in the memtable/WAL and shadow the new segment.
   `db.waitForMaintenance()` awaits it. On the web the segment is built inline
   because isolates are unavailable.
-- `MaintenanceScheduler` and the segment-builder function are the seams for a
-  persistent worker isolate; the engine does not change.
 
 ## Status
 
@@ -147,6 +155,7 @@ Pre-alpha, usable end to end on the VM.
 | Crash-point matrix (deterministic, in CI) | done |
 | Deferred flush/compaction (single isolate) | done |
 | Background-isolate segment build | done |
+| Worker isolate + RPC facade (one writer, many clients) | done |
 | Full-text and n-gram primitives | done |
 | Web (OPFS) sync engine, HTTP backends | planned |
 | Mongo-style client facade | planned |
@@ -371,22 +380,19 @@ reopen                            0ms          2 (1/0/0/1)      0.0MB      0.0MB
 Already shipped: VXS format, WAL + segments + mmap, query layer, secondary
 indexes, typed collections, references, graph, full-text, object-store engine,
 transactions, single-writer lock, durability tiers, auto-flush, auto-compaction,
-deferred maintenance, integrity check, typed errors, and a deterministic
-crash-point matrix in CI (every byte of a torn transaction frame,
-segment-before-manifest, torn manifest fallback, pre-truncate replay, corrupt
-segment).
+deferred maintenance, background-isolate segment builds, the worker-isolate RPC
+facade, integrity check, typed errors, and a deterministic crash-point matrix in
+CI (every byte of a torn transaction frame, segment-before-manifest, torn
+manifest fallback, pre-truncate replay, corrupt segment).
 
 Remaining, in order:
 
-1. **Worker isolate** — segment building now runs on a background isolate; the
-   next step is a persistent worker plus a shared-nothing RPC facade for one
-   writer / many readers across isolates.
-2. **Backup / restore** and read-only opens.
-3. **Index-range performance** — isar is currently 1.6x faster on the 12k-hit
+1. **Backup / restore** and read-only opens.
+2. **Index-range performance** — isar is currently 1.6x faster on the 12k-hit
    range benchmark; then the engine-level KV range cursor.
-4. **Web storage** (OPFS in a worker) instead of the current stub.
-5. **Mongo-style facade** over the existing query layer.
-6. **Docs site and runnable examples**, plus long-running stress/fuzz jobs.
+3. **Web storage** (OPFS in a worker) instead of the current stub.
+4. **Mongo-style facade** over the existing query layer.
+5. **Docs site and runnable examples**, plus long-running stress/fuzz jobs.
 
 ## License
 

@@ -50,3 +50,10 @@ final class VelxoNotFoundException extends VelxoException {
   /// Creates a not-found error.
   const VelxoNotFoundException(super.message);
 }
+
+/// A failure crossing the worker-isolate boundary (transport, or an error the
+/// worker could not classify).
+final class VelxoWorkerException extends VelxoException {
+  /// Creates a worker error.
+  const VelxoWorkerException(super.message);
+}

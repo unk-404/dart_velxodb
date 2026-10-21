@@ -140,6 +140,12 @@
   WAL reset only when no write landed after the snapshot, otherwise newer writes
   shadow the committed segment. `waitForMaintenance()` awaits the build. The
   web build falls back to an inline build.
+- Worker isolate: `VelxoWorker.open(path)` owns the only `VelxoDatabase` in a
+  dedicated isolate and exposes an async RPC facade (`put`/`get`/`delete`/
+  `page`/`flush`/`check`/`waitForMaintenance`/`close`). Requests from any
+  isolate are queued and executed one at a time, preserving the single-writer
+  contract while callers stay concurrent. Typed exceptions cross the boundary.
+  The web build exports an unsupported stub.
 - Single-writer lock now also works on POSIX: an in-process registry of
   canonical paths complements the OS lock, which is process-wide there, so a
   second open inside the same process is rejected on Linux and macOS too.
