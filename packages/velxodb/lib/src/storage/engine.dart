@@ -212,7 +212,7 @@ final class StorageEngine {
     if (_memtable.length == 0) return null;
 
     final builder = SegmentBuilder(blockTargetSize: blockTargetSize);
-    _memtable.forEach((key, chunk, offset, length) {
+    _memtable.forEachSorted((key, chunk, offset, length) {
       if (length < 0) {
         builder.addTombstone(key);
       } else {

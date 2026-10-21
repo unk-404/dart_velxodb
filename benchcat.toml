@@ -74,6 +74,14 @@ value = "value * 100 * 64 / 1000000"
 group = "Storage"
 
 [[row]]
+id = "storage memtable.range"
+label = "Memtable range seek"
+note = "1k of 50k entries, skip list"
+unit = "Mdocs/s"
+value = "value * 100 * 1000 / 1000000"
+group = "Storage"
+
+[[row]]
 id = "storage engine.put"
 label = "Engine write path"
 note = "WAL + arena + memtable, sync"

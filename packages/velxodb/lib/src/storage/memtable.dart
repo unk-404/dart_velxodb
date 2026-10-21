@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import '../serde/crc32c.dart';
+import '../serde/string_view.dart';
 
 /// Reference to the bytes of one value stored outside the memtable.
 ///
@@ -28,6 +29,9 @@ final class MemTable {
     _valueChunks = Int32List(initialEntries);
     _valueOffsets = Int32List(initialEntries);
     _valueLengths = Int32List(initialEntries);
+    _heights = Int32List(initialEntries);
+    _heads.fillRange(0, _heads.length, -1);
+    _levels.add(_newLevel(initialEntries));
   }
 
   Int32List _slots;
@@ -41,6 +45,17 @@ final class MemTable {
   Uint8List _keys = Uint8List(1024);
   int _keysUsed = 0;
   int _count = 0;
+
+  // Skip list over the entries, ordered by key. The hash table above answers
+  // point lookups; this index makes range scans seek instead of scanning the
+  // whole memtable.
+  final Int32List _heads = Int32List(_maxLevels);
+  final List<Int32List> _levels = <Int32List>[];
+  late Int32List _heights;
+  int _topLevel = 0;
+  int _rng = 0x9E3779B9;
+
+  static const int _maxLevels = 32;
 
   /// Number of live entries, tombstones included.
   int get length => _count;
@@ -129,17 +144,147 @@ final class MemTable {
     }
   }
 
-  /// Visits every entry in insertion order. Key slices are zero-copy views.
-  void forEach(
+  /// Visits every entry in ascending key order.
+  void forEachSorted(
     void Function(Uint8List key, int chunk, int offset, int length) visit,
   ) {
-    for (var i = 0; i < _count; i++) {
-      visit(
-        Uint8List.sublistView(_keys, _keyOffsets[i], _keyOffsets[i] + _keyLengths[i]),
-        _valueChunks[i],
-        _valueOffsets[i],
-        _valueLengths[i],
-      );
+    var index = _heads[0];
+    while (index >= 0) {
+      visit(keyAt(index), _valueChunks[index], _valueOffsets[index], _valueLengths[index]);
+      index = _levels[0][index];
+    }
+  }
+
+  /// Visits entries whose key is in `[lower, upper)` in ascending key order.
+  ///
+  /// Seeks with the skip list, so a narrow range costs O(log n + k) instead of
+  /// scanning the whole memtable.
+  void forEachRange(
+    Uint8List? lower,
+    Uint8List? upper,
+    void Function(Uint8List key, int chunk, int offset, int length) visit, {
+    bool includeLower = true,
+    bool includeUpper = false,
+  }) {
+    var index = _firstAtOrAfter(lower);
+    while (index >= 0) {
+      final key = keyAt(index);
+      if (lower != null && !includeLower && _compareKeyToEntry(lower, index) == 0) {
+        index = _levels[0][index];
+        continue;
+      }
+      if (upper != null) {
+        final comparison = _compareKeyToEntry(upper, index);
+        if (comparison > 0 || (comparison == 0 && !includeUpper)) break;
+      }
+      visit(key, _valueChunks[index], _valueOffsets[index], _valueLengths[index]);
+      index = _levels[0][index];
+    }
+  }
+
+  int _firstAtOrAfter(Uint8List? key) {
+    var index = -1;
+    if (key == null) return _heads[0];
+    for (var level = _topLevel; level >= 0; level--) {
+      while (true) {
+        final next = _nextAt(level, index);
+        if (next < 0) break;
+        if (_compareKeyToEntry(key, next) >= 0) break;
+        index = next;
+      }
+    }
+    return _nextAt(0, index);
+  }
+
+  int _compareKeyToEntry(Uint8List key, int index) {
+    final start = _keyOffsets[index];
+    final length = _keyLengths[index];
+    return StringView.compareRanges(
+      _keys,
+      start,
+      start + length,
+      key,
+      0,
+      key.length,
+    );
+  }
+
+  int _nextAt(int level, int index) =>
+      index < 0 ? _heads[level] : _levels[level][index];
+
+  void _skipInsert(int index) {
+    final level = _randomLevel();
+    _heights[index] = level;
+    _ensureLevel(level);
+
+    var cursor = -1;
+    for (var current = _topLevel; current >= 0; current--) {
+      while (true) {
+        final next = _nextAt(current, cursor);
+        if (next < 0 || _compareEntryToEntry(next, index) >= 0) break;
+        cursor = next;
+      }
+      if (current <= level) {
+        if (cursor < 0) {
+          _levels[current][index] = _heads[current];
+          _heads[current] = index;
+        } else {
+          _levels[current][index] = _levels[current][cursor];
+          _levels[current][cursor] = index;
+        }
+      }
+    }
+    if (level > _topLevel) {
+      for (var current = _topLevel + 1; current <= level; current++) {
+        _levels[current][index] = _heads[current];
+        _heads[current] = index;
+      }
+      _topLevel = level;
+    }
+  }
+
+  int _compareEntryToEntry(int a, int b) {
+    final aStart = _keyOffsets[a];
+    final aLength = _keyLengths[a];
+    final bStart = _keyOffsets[b];
+    final bLength = _keyLengths[b];
+    return StringView.compareRanges(
+      _keys,
+      aStart,
+      aStart + aLength,
+      _keys,
+      bStart,
+      bStart + bLength,
+    );
+  }
+
+  int _randomLevel() {
+    _rng ^= (_rng << 13) & 0x7FFFFFFF;
+    _rng ^= _rng >> 17;
+    _rng ^= (_rng << 5) & 0x7FFFFFFF;
+    var level = 0;
+    var bits = _rng;
+    while ((bits & 1) == 1 && level < _maxLevels - 1) {
+      level++;
+      bits >>= 1;
+    }
+    return level;
+  }
+
+  static Int32List _newLevel(int capacity) =>
+      Int32List(capacity)..fillRange(0, capacity, -1);
+
+  void _ensureLevel(int level) {
+    while (_levels.length <= level) {
+      _levels.add(_newLevel(_heights.length));
+    }
+  }
+
+  void _resizeLevels(int capacity) {
+    for (var i = 0; i < _levels.length; i++) {
+      final next = _newLevel(capacity);
+      next.setRange(0, _levels[i].length, _levels[i]);
+      _levels[i] = next;
     }
   }
 
@@ -162,6 +307,11 @@ final class MemTable {
     _slots.fillRange(0, _slots.length, 0);
     _keysUsed = 0;
     _count = 0;
+    _heads.fillRange(0, _heads.length, -1);
+    for (final level in _levels) {
+      level.fillRange(0, level.length, -1);
+    }
+    _topLevel = 0;
   }
 
   int _appendEntry(
@@ -187,6 +337,7 @@ final class MemTable {
     _keys.setRange(_keysUsed, _keysUsed + key.length, key);
     _keysUsed += key.length;
     _count++;
+    _skipInsert(index);
     return index;
   }
 
@@ -206,6 +357,8 @@ final class MemTable {
     _valueChunks = _resize(_valueChunks, capacity);
     _valueOffsets = _resize(_valueOffsets, capacity);
     _valueLengths = _resize(_valueLengths, capacity);
+    _heights = _resize(_heights, capacity);
+    _resizeLevels(capacity);
   }
 
   static Int32List _resize(Int32List source, int capacity) {

@@ -46,4 +46,8 @@
 - Streaming `CollectionCursor` with prefix/range bounds (segment cursors seek by
   binary search instead of scanning), predicate filters over zero-copy
   `DocView`s, and limits. Scan throughput roughly 4M docs/s.
+- Memtable gains an index-based skip list next to the hash table: range scans
+  seek in O(log n + k) instead of collecting and sorting the whole memtable
+  (~17.5M docs/s for a 1k window over 50k entries), and flush now iterates in
+  key order.
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).

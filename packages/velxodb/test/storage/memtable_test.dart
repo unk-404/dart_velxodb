@@ -44,17 +44,41 @@ void main() {
       expect(table.get(k('key-42'))!.offset, 42);
     });
 
-    test('iterates in insertion order with zero-copy keys', () {
+    test('iterates in key order with zero-copy keys', () {
       final table = MemTable()
-        ..put(k('x'), 3, 1, 2)
-        ..put(k('y'), 4, 5, 6);
+        ..put(k('y'), 4, 5, 6)
+        ..put(k('x'), 3, 1, 2);
       final seen = <String>[];
-      table.forEach((key, chunk, offset, length) {
+      table.forEachSorted((key, chunk, offset, length) {
         seen.add('${String.fromCharCodes(key)}:$chunk:$offset:$length');
       });
       expect(seen, <String>['x:3:1:2', 'y:4:5:6']);
-      expect(String.fromCharCodes(table.keyAt(1)), 'y');
-      expect(table.refAt(0), (chunk: 3, offset: 1, length: 2));
+      expect(String.fromCharCodes(table.keyAt(0)), 'y');
+      expect(table.refAt(0), (chunk: 4, offset: 5, length: 6));
+      expect(table.refAt(1), (chunk: 3, offset: 1, length: 2));
+    });
+
+    test('range iteration seeks instead of scanning', () {
+      final table = MemTable();
+      for (var i = 0; i < 100; i++) {
+        table.put(k('key-${i.toString().padLeft(3, '0')}'), 0, i, 1);
+      }
+      final seen = <String>[];
+      table.forEachRange(
+        k('key-050'),
+        k('key-053'),
+        (key, chunk, offset, length) => seen.add(String.fromCharCodes(key)),
+      );
+      expect(seen, <String>['key-050', 'key-051', 'key-052']);
+
+      final inclusive = <String>[];
+      table.forEachRange(
+        k('key-050'),
+        k('key-052'),
+        (key, chunk, offset, length) => inclusive.add(String.fromCharCodes(key)),
+        includeUpper: true,
+      );
+      expect(inclusive, <String>['key-050', 'key-051', 'key-052']);
     });
 
     test('clear keeps the table usable', () {

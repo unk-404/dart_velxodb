@@ -96,16 +96,21 @@ abstract interface class _Source {
 final class _MemTableSource implements _Source {
   _MemTableSource(this._engine, this._bounds) {
     _entries = <_MemEntry>[];
-    _engine.memtable.forEach((key, chunk, offset, length) {
-      if (!_bounds.contains(key)) return;
-      _entries.add((
-        key: key,
-        chunk: chunk,
-        offset: offset,
-        length: length,
-      ));
-    });
-    _entries.sort((a, b) => CollectionCursor._compare(a.key, b.key));
+    // The memtable keeps a skip list, so this seeks instead of scanning.
+    _engine.memtable.forEachRange(
+      _bounds.lower,
+      _bounds.upper,
+      (key, chunk, offset, length) {
+        _entries.add((
+          key: key,
+          chunk: chunk,
+          offset: offset,
+          length: length,
+        ));
+      },
+      includeLower: _bounds.includeLower,
+      includeUpper: _bounds.includeUpper,
+    );
   }
 
   final StorageEngine _engine;
@@ -156,7 +161,7 @@ final class _SegmentSource implements _Source {
   void advance() => _has = _cursor.moveNext();
 }
 
-/// Half-open (by default) key bounds over full keys, prefix included.
+/// Key bounds over full keys, prefix included.
 final class _Bounds {
   _Bounds(this.lower, this.includeLower, this.upper, this.includeUpper);
 
@@ -164,20 +169,6 @@ final class _Bounds {
   final bool includeLower;
   final Uint8List? upper;
   final bool includeUpper;
-
-  bool contains(Uint8List key) {
-    final low = lower;
-    if (low != null) {
-      final comparison = CollectionCursor._compare(key, low);
-      if (comparison < 0 || (comparison == 0 && !includeLower)) return false;
-    }
-    final high = upper;
-    if (high != null) {
-      final comparison = CollectionCursor._compare(key, high);
-      if (comparison > 0 || (comparison == 0 && !includeUpper)) return false;
-    }
-    return true;
-  }
 }
 
 /// Builds a cursor over the engine's memtable and segments.
