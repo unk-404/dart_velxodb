@@ -24,6 +24,9 @@ const int segmentFooterMagic = 0x47455356;
 /// Footer size of a segment.
 const int segmentFooterSize = 32;
 
+/// `docOffset` value marking a tombstone entry.
+const int segmentTombstone = 0xFFFFFFFF;
+
 /// Builds an immutable segment: blocks of documents plus a sorted primary index.
 ///
 /// The segment is a pure byte format: [finish] returns a [Bytes] buffer that can
@@ -75,6 +78,13 @@ final class SegmentBuilder {
     if (_block!.isFull) {
       _finishBlock();
     }
+  }
+
+  /// Records that [key] was deleted, without storing a document.
+  void addTombstone(Uint8List key) {
+    _keys.add(Uint8List.fromList(key));
+    _docOffsets.add(segmentTombstone);
+    _docCount++;
   }
 
   /// Builds the segment and returns its bytes.
@@ -326,8 +336,8 @@ final class SegmentReader {
 
   /// Looks [key] up, returning `null` when absent.
   ///
-  /// The returned view points into [buffer]; no bytes are copied.
-  DocView? find(Uint8List key) {
+  /// A hit distinguishes a live document from a tombstone.
+  ({bool tombstone, DocView? document})? lookup(Uint8List key) {
     if (!_bloom.mightContain(key)) return null;
     var low = 0;
     var high = _indexCount - 1;
@@ -339,11 +349,43 @@ final class SegmentReader {
       } else if (comparison > 0) {
         high = middle - 1;
       } else {
-        final docOffset = VxsLe.u32(buffer, _entryStart(middle) + 2 + _keyLength(middle));
-        return DocView.parse(buffer, docOffset, end - docOffset);
+        final docOffset = VxsLe.u32(
+          buffer,
+          _entryStart(middle) + 2 + _keyLength(middle),
+        );
+        if (docOffset == segmentTombstone) {
+          return (tombstone: true, document: null);
+        }
+        return (
+          tombstone: false,
+          document: DocView.parse(buffer, docOffset, end - docOffset),
+        );
       }
     }
     return null;
+  }
+
+  /// Looks [key] up, returning `null` for both absence and tombstones.
+  DocView? find(Uint8List key) => lookup(key)?.document;
+
+  /// Visits every entry in key order, tombstones included.
+  void forEachEntry(void Function(Uint8List key, DocView? document) visit) {
+    for (var i = 0; i < _indexCount; i++) {
+      final entryStart = _entryStart(i);
+      final keyLength = VxsLe.u16(buffer, entryStart);
+      final key = Uint8List.sublistView(
+        buffer,
+        entryStart + 2,
+        entryStart + 2 + keyLength,
+      );
+      final docOffset = VxsLe.u32(buffer, entryStart + 2 + keyLength);
+      visit(
+        key,
+        docOffset == segmentTombstone
+            ? null
+            : DocView.parse(buffer, docOffset, end - docOffset),
+      );
+    }
   }
 
   /// Visits every document in block order.

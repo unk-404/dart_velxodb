@@ -49,8 +49,20 @@ void main() {
 
   // The engine benchmark swallows WAL bytes so a long run does not turn into
   // hundreds of megabytes of log.
-  final engine = StorageEngine(walFile: _NullStorageFile());
+  final engine = StorageEngine(directory: _NullDirectory());
   engine.openSync();
+
+  // An engine with one flushed segment, for segment-backed point reads.
+  final flushedDirectory = MemoryStorageDirectory();
+  final flushedEngine = StorageEngine(directory: flushedDirectory);
+  flushedEngine.openSync();
+  for (var i = 0; i < 256; i++) {
+    flushedEngine.putSync(
+      Uint8List.fromList('flush-${i.toString().padLeft(4, '0')}'.codeUnits),
+      doc,
+    );
+  }
+  flushedEngine.flushSync();
 
   // A small segment reused for lookup and scan benchmarks.
   const segmentDocs = 64;
@@ -158,6 +170,17 @@ void main() {
       }
       sink = acc;
     });
+
+    benchmark('engine.get.segment', () {
+      for (var round = 0; round < batch; round++) {
+        for (var i = 0; i < 64; i++) {
+          final key = Uint8List.fromList(
+            'flush-${i.toString().padLeft(4, '0')}'.codeUnits,
+          );
+          sink += flushedEngine.get(key)?.length ?? -1;
+        }
+      }
+    });
   });
 }
 
@@ -180,4 +203,33 @@ final class _NullStorageFile implements SyncStorageFile {
 
   @override
   void flushSync() {}
+
+  @override
+  Uint8List readAllSync() => Uint8List(0);
+
+  @override
+  void writeAllSync(Uint8List bytes) => _length = bytes.length;
+}
+
+/// Hands out the null WAL file and refuses everything else.
+final class _NullDirectory implements SyncStorageDirectory {
+  final _NullStorageFile _wal = _NullStorageFile();
+
+  @override
+  SyncStorageFile openSync(String name, {bool create = true}) {
+    if (name == StorageEngine.walFileName) return _wal;
+    throw UnsupportedError('null directory does not support $name');
+  }
+
+  @override
+  bool existsSync(String name) => false;
+
+  @override
+  void deleteSync(String name) {}
+
+  @override
+  void renameSync(String from, String to) {}
+
+  @override
+  List<String> listSync() => const <String>[];
 }

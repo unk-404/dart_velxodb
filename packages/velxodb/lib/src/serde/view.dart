@@ -166,6 +166,9 @@ final class DocView {
   /// Total encoded size in bytes, including any checksum trailer.
   int get byteLength => byteEnd - byteOffset;
 
+  /// Zero-copy view of the whole encoded document.
+  Bytes toBytes() => Bytes.view(buffer, byteOffset, byteLength);
+
   /// Number of field entries, obtained by scanning.
   int get fieldCount {
     final cursor = this.cursor();

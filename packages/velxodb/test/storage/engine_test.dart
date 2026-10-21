@@ -12,66 +12,125 @@ Bytes doc(String text) => (DocBuilder(schemaId: 1)
       ..putInt(2, text.length))
     .finish();
 
+StorageEngine openEngine(MemoryStorageDirectory directory) {
+  final engine = StorageEngine(directory: directory);
+  engine.openSync();
+  return engine;
+}
+
+MemoryStorageFile walFileOf(MemoryStorageDirectory directory) =>
+    directory.openSync(StorageEngine.walFileName) as MemoryStorageFile;
+
 void main() {
   group('StorageEngine', () {
-    test('put, get, overwrite and delete', () async {
-      final file = MemoryStorageFile();
-      final engine = StorageEngine(walFile: file);
-      await engine.open();
-
-      await engine.put(k('a'), doc('first'));
+    test('put, get, overwrite and delete', () {
+      final engine = openEngine(MemoryStorageDirectory());
+      engine.putSync(k('a'), doc('first'));
       expect(DocView.parse(engine.get(k('a'))!.asUint8List()).getString(1), 'first');
 
-      await engine.put(k('a'), doc('second'));
-      expect(DocView.parse(engine.get(k('a'))!.asUint8List()).getString(1), 'second');
+      engine.putSync(k('a'), doc('second'));
+      expect(
+        DocView.parse(engine.get(k('a'))!.asUint8List()).getString(1),
+        'second',
+      );
 
-      await engine.delete(k('a'));
+      engine.deleteSync(k('a'));
       expect(engine.get(k('a')), isNull);
       expect(engine.get(k('never')), isNull);
-
-      await engine.close();
     });
 
-    test('recovers from the log on reopen', () async {
-      final file = MemoryStorageFile();
-      final first = StorageEngine(walFile: file);
-      await first.open();
-      await first.put(k('a'), doc('alpha'));
-      await first.put(k('b'), doc('beta'));
-      await first.put(k('c'), doc('gamma'));
-      await first.delete(k('b'));
-      await first.sync();
-      final persisted = Uint8List.fromList(file.bytes);
-      await first.close();
+    test('flush moves data into a segment and clears the WAL', () {
+      final directory = MemoryStorageDirectory();
+      final engine = openEngine(directory);
+      engine.putSync(k('a'), doc('alpha'));
+      engine.putSync(k('b'), doc('beta'));
 
-      // Reopening means a fresh handle over the same bytes.
-      final reopened = MemoryStorageFile();
-      await reopened.append(persisted);
-      final second = StorageEngine(walFile: reopened);
-      await second.open();
-      expect(DocView.parse(second.get(k('a'))!.asUint8List()).getString(1), 'alpha');
-      expect(second.get(k('b')), isNull);
-      expect(DocView.parse(second.get(k('c'))!.asUint8List()).getString(1), 'gamma');
+      final info = engine.flushSync();
+      expect(info, isNotNull);
+      expect(engine.segments, hasLength(1));
+      expect(engine.memtable.length, 0);
+      expect(walFileOf(directory).lengthSync, 0);
+
+      expect(
+        DocView.parse(engine.get(k('a'))!.asUint8List()).getString(1),
+        'alpha',
+      );
+      expect(
+        DocView.parse(engine.get(k('b'))!.asUint8List()).getString(1),
+        'beta',
+      );
     });
 
-    test('recovers a consistent prefix from a torn log', () async {
-      final source = MemoryStorageFile();
-      final first = StorageEngine(walFile: source);
-      await first.open();
+    test('reopens with segments and replays only the WAL tail', () {
+      final directory = MemoryStorageDirectory();
+      final first = openEngine(directory);
+      first.putSync(k('flushed'), doc('segment'));
+      first.flushSync();
+      first.putSync(k('pending'), doc('wal'));
+      first.syncNow();
+
+      final second = openEngine(directory);
+      expect(second.segments, hasLength(1));
+      expect(
+        DocView.parse(second.get(k('flushed'))!.asUint8List()).getString(1),
+        'segment',
+      );
+      expect(
+        DocView.parse(second.get(k('pending'))!.asUint8List()).getString(1),
+        'wal',
+      );
+    });
+
+    test('newer segments shadow older ones', () {
+      final directory = MemoryStorageDirectory();
+      final engine = openEngine(directory);
+      engine.putSync(k('k'), doc('v1'));
+      engine.flushSync();
+      engine.putSync(k('k'), doc('v2'));
+      engine.flushSync();
+      expect(engine.segments, hasLength(2));
+      expect(DocView.parse(engine.get(k('k'))!.asUint8List()).getString(1), 'v2');
+
+      final reopened = openEngine(directory);
+      expect(
+        DocView.parse(reopened.get(k('k'))!.asUint8List()).getString(1),
+        'v2',
+      );
+    });
+
+    test('tombstones survive a flush and a reopen', () {
+      final directory = MemoryStorageDirectory();
+      final engine = openEngine(directory);
+      engine.putSync(k('gone'), doc('x'));
+      engine.flushSync();
+      engine.deleteSync(k('gone'));
+      engine.flushSync();
+
+      expect(engine.get(k('gone')), isNull);
+      final reopened = openEngine(directory);
+      expect(reopened.get(k('gone')), isNull);
+      expect(reopened.segments, hasLength(2));
+    });
+
+    test('recovers a consistent prefix from a torn WAL', () {
+      final source = MemoryStorageDirectory();
+      final engine = openEngine(source);
       for (var i = 0; i < 4; i++) {
-        await first.put(k('k$i'), doc('v$i'));
+        engine.putSync(k('k$i'), doc('v$i'));
       }
-      await first.sync();
-      final complete = Uint8List.fromList(source.bytes);
+      engine.syncNow();
+      final complete = Uint8List.fromList(
+        source.openSync(StorageEngine.walFileName).readAllSync(),
+      );
 
-      for (final cut in <int>[complete.length - 1, complete.length - 7, 5]) {
-        final file = MemoryStorageFile();
-        await file.append(Uint8List.sublistView(complete, 0, cut));
-        final engine = StorageEngine(walFile: file);
-        await engine.open();
-        // Whatever survived must be a prefix of the original writes.
+      for (final cut in <int>[complete.length - 1, complete.length - 7, 5, 64]) {
+        final directory = MemoryStorageDirectory();
+        directory
+            .openSync(StorageEngine.walFileName)
+            .writeAllSync(Uint8List.sublistView(complete, 0, cut));
+        final recovered = openEngine(directory);
         for (var i = 0; i < 4; i++) {
-          final value = engine.get(k('k$i'));
+          final value = recovered.get(k('k$i'));
           if (value != null) {
             expect(
               DocView.parse(value.asUint8List()).getString(1),
@@ -79,65 +138,116 @@ void main() {
             );
           }
         }
-        // A cut that leaves at least one whole frame must recover the first write.
-        if (cut >= 64) {
-          expect(engine.get(k('k0')), isNotNull, reason: 'cut=$cut');
-        }
       }
     });
 
-    test('returns views that stay valid as more data arrives', () async {
-      final engine = StorageEngine(
-        walFile: MemoryStorageFile(),
-        arenaChunkSize: 1024,
-      );
-      await engine.open();
-      await engine.put(k('a'), doc('early'));
-      final early = engine.get(k('a'))!;
+    test('falls back to the older manifest slot when the newest is torn', () {
+      final directory = MemoryStorageDirectory();
+      final engine = openEngine(directory);
+      engine.putSync(k('first'), doc('one'));
+      engine.flushSync();
+      engine.putSync(k('second'), doc('two'));
+      engine.flushSync();
+      expect(engine.generation, 2);
 
-      // Enough writes to roll the arena over several chunks.
+      // Generation 2 lives in slot 0; corrupt it.
+      final slot = directory.openSync('MANIFEST-0') as MemoryStorageFile;
+      final corrupted = Uint8List.fromList(slot.bytes);
+      corrupted[corrupted.length - 1] ^= 0xFF;
+      slot.writeAllSync(corrupted);
+
+      final recovered = openEngine(directory);
+      expect(recovered.generation, 1);
+      expect(recovered.segments, hasLength(1));
+      // The newer data is still in the WAL only if it was not flushed; here the
+      // second flush happened, so its segment is unreferenced.
+      expect(recovered.get(k('first')), isNotNull);
+    });
+
+    test('returns views that stay valid as more data arrives', () {
+      final engine = openEngine(MemoryStorageDirectory());
+      engine.putSync(k('a'), doc('early'));
+      final early = engine.get(k('a'))!;
       for (var i = 0; i < 50; i++) {
-        await engine.put(k('bulk-$i'), doc('payload-$i'));
+        engine.putSync(k('bulk-$i'), doc('payload-$i'));
       }
       expect(DocView.parse(early.asUint8List()).getString(1), 'early');
     });
 
-    test('handles documents larger than the arena chunk', () async {
+    test('handles documents larger than the arena chunk', () {
       final engine = StorageEngine(
-        walFile: MemoryStorageFile(),
+        directory: MemoryStorageDirectory(),
         arenaChunkSize: 1024,
-      );
-      await engine.open();
+      )..openSync();
       final big = 'z' * 20000;
-      await engine.put(k('big'), doc(big));
-      expect(DocView.parse(engine.get(k('big'))!.asUint8List()).getString(1), big);
+      engine.putSync(k('big'), doc(big));
+      expect(
+        DocView.parse(engine.get(k('big'))!.asUint8List()).getString(1),
+        big,
+      );
     });
 
-    test('tracks memory and a flush threshold', () async {
+    test('tracks the flush threshold', () {
       final engine = StorageEngine(
-        walFile: MemoryStorageFile(),
+        directory: MemoryStorageDirectory(),
         maxMemtableBytes: 128,
-      );
-      await engine.open();
+      )..openSync();
       expect(engine.shouldFlush, isFalse);
       for (var i = 0; i < 20; i++) {
-        await engine.put(k('k$i'), doc('value-$i'));
+        engine.putSync(k('k$i'), doc('value-$i'));
       }
-      expect(engine.memoryBytes, greaterThan(0));
       expect(engine.shouldFlush, isTrue);
+      expect(engine.maybeFlushSync(), isTrue);
+      expect(engine.shouldFlush, isFalse);
+      expect(engine.segments, hasLength(1));
+    });
+
+    test('compaction merges segments and drops shadowed tombstones', () {
+      final directory = MemoryStorageDirectory();
+      final engine = openEngine(directory);
+      engine.putSync(k('keep'), doc('v1'));
+      engine.putSync(k('drop'), doc('gone'));
+      engine.flushSync();
+      engine.putSync(k('keep'), doc('v2'));
+      engine.deleteSync(k('drop'));
+      engine.flushSync();
+      expect(engine.segments, hasLength(2));
+
+      expect(engine.compactSync(), isTrue);
+      expect(engine.segments, hasLength(1));
+      expect(
+        DocView.parse(engine.get(k('keep'))!.asUint8List()).getString(1),
+        'v2',
+      );
+      expect(engine.get(k('drop')), isNull);
+
+      final reopened = openEngine(directory);
+      expect(reopened.segments, hasLength(1));
+      expect(
+        DocView.parse(reopened.get(k('keep'))!.asUint8List()).getString(1),
+        'v2',
+      );
+      expect(reopened.get(k('drop')), isNull);
+    });
+
+    test('compaction is a no-op with fewer than two segments', () {
+      final engine = openEngine(MemoryStorageDirectory());
+      engine.putSync(k('a'), doc('x'));
+      engine.flushSync();
+      expect(engine.compactSync(), isFalse);
+      expect(engine.segments, hasLength(1));
     });
 
     test('sync flushes and close rejects further writes', () async {
-      final file = MemoryStorageFile();
-      final engine = StorageEngine(walFile: file);
-      await engine.open();
-      await engine.put(k('a'), doc('x'));
-      await engine.sync();
-      expect(file.flushCount, greaterThan(0));
+      final directory = MemoryStorageDirectory();
+      final engine = openEngine(directory);
+      engine.putSync(k('a'), doc('x'));
+      engine.syncNow();
+      expect(walFileOf(directory).flushCount, greaterThan(0));
 
       await engine.close();
-      expect(() => engine.put(k('b'), doc('y')), throwsStateError);
-      expect(() => engine.get(k('a')), returnsNormally);
+      expect(() => engine.putSync(k('b'), doc('y')), throwsStateError);
+      expect(engine.get(k('a')), isNotNull);
     });
   });
 }

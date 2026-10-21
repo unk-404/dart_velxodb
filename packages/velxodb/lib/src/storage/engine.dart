@@ -3,42 +3,73 @@ import 'dart:typed_data';
 import 'package:blit/blit.dart';
 
 import 'arena.dart';
+import 'directory.dart';
 import 'file.dart';
+import 'manifest.dart';
 import 'memtable.dart';
+import 'segment.dart';
 import 'wal.dart';
 
-/// Write path of the storage engine: WAL → arena → memtable.
+/// Local storage engine: WAL → memtable → immutable segments.
 ///
-/// This is deliberately the *only* place that knows about all three pieces. The
-/// WAL knows nothing about memtables, the memtable knows nothing about files,
-/// and the arena only hands out stable byte references.
+/// The core is synchronous and this is the only class that knows about all the
+/// pieces: the WAL knows nothing about memtables or segments, the memtable
+/// knows nothing about files, and segments are pure byte codecs.
 ///
-/// The core is synchronous. `await`-ing three nested futures per insert costs
-/// more than the insert, so the async API is a thin `async` facade over the
-/// sync methods — callers that need throughput call the sync ones directly.
+/// Durability ordering on every write:
 ///
-/// Durability contract: [putSync] and [deleteSync] append to the WAL before the
-/// change becomes visible in memory. [syncNow] is what makes those appends
-/// durable; the caller decides the policy (per batch, timed, or on close).
+/// 1. append the frame to the WAL,
+/// 2. apply it to the arena and memtable.
+///
+/// Durability ordering on a flush:
+///
+/// 1. write and flush the segment file,
+/// 2. write and flush the manifest (the commit point),
+/// 3. truncate the WAL and drop the memtable.
+///
+/// A crash between 2 and 3 replays the WAL again, which is idempotent: the same
+/// key/value pairs overwrite themselves in the new memtable.
 final class StorageEngine {
-  /// Creates an engine writing to [walFile].
+  /// Creates an engine over [directory].
   StorageEngine({
-    required SyncStorageFile walFile,
+    required SyncStorageDirectory directory,
     int arenaChunkSize = 1 << 20,
     this.maxMemtableBytes = 64 << 20,
-  }) : _walFile = walFile,
-       _wal = Wal(walFile),
-       _arena = DocArena(chunkSize: arenaChunkSize);
+    this.blockTargetSize = 64 * 1024,
+  }) : _directory = directory,
+       _arenaChunkSize = arenaChunkSize,
+       _walFile = directory.openSync(walFileName),
+       _arena = DocArena(chunkSize: arenaChunkSize) {
+    _wal = Wal(_walFile);
+  }
 
+  /// Name of the write-ahead log file.
+  static const String walFileName = 'wal.log';
+
+  /// Prefix of segment files.
+  static const String segmentPrefix = 'SEG-';
+
+  /// Suffix of segment files.
+  static const String segmentSuffix = '.seg';
+
+  final SyncStorageDirectory _directory;
+  final int _arenaChunkSize;
   final SyncStorageFile _walFile;
-  final Wal _wal;
-  final DocArena _arena;
+  late final Wal _wal;
+  DocArena _arena;
   final MemTable _memtable = MemTable();
+
+  final List<SegmentReader> _segments = <SegmentReader>[];
+  final List<SegmentInfo> _segmentInfos = <SegmentInfo>[];
+  Manifest? _manifest;
+  int _nextSegmentId = 1;
+  bool _closed = false;
 
   /// Threshold at which [shouldFlush] becomes true.
   final int maxMemtableBytes;
 
-  bool _closed = false;
+  /// Target block size when building a segment.
+  final int blockTargetSize;
 
   /// The memtable, exposed for flushing and tests.
   MemTable get memtable => _memtable;
@@ -46,14 +77,36 @@ final class StorageEngine {
   /// The document arena, exposed for flushing.
   DocArena get arena => _arena;
 
+  /// Segments currently searched, oldest first.
+  List<SegmentReader> get segments => List.unmodifiable(_segments);
+
+  /// Manifest generation, or 0 when nothing has been flushed yet.
+  int get generation => _manifest?.generation ?? 0;
+
   /// Bytes of document payload plus keys currently held in memory.
   int get memoryBytes => _arena.bytesUsed + _memtable.keyBytes;
 
   /// Whether the write buffer should be flushed to a segment.
   bool get shouldFlush => memoryBytes >= maxMemtableBytes;
 
-  /// Replays the WAL into the memtable. Call once before serving reads.
+  /// Loads the manifest and replays the WAL. Call once before serving reads.
   void openSync() {
+    final store = ManifestStore(_directory);
+    final manifest = store.loadSync();
+    if (manifest != null) {
+      _manifest = manifest;
+      for (final info in manifest.segments) {
+        final bytes = _directory.openSync(info.name).readAllSync();
+        _segments.add(SegmentReader(bytes));
+        _segmentInfos.add(info);
+        _trackSegmentId(info.name);
+      }
+    }
+    for (final name in _directory.listSync()) {
+      if (name.startsWith(segmentPrefix) && name.endsWith(segmentSuffix)) {
+        _trackSegmentId(name);
+      }
+    }
     _wal.replaySync((payload) {
       WalBatch.decode(payload, (kind, key, value) {
         if (kind == WalOpKind.put) {
@@ -79,12 +132,10 @@ final class StorageEngine {
   }
 
   /// Async facade over [putSync].
-  Future<void> put(Uint8List key, Bytes document) async => putSync(key, document);
+  Future<void> put(Uint8List key, Bytes document) async =>
+      putSync(key, document);
 
   /// Inserts or replaces several documents with a single WAL frame.
-  ///
-  /// Batching is the difference between one checksum and append per document
-  /// and one per batch, which is where most of the write-path cost lives.
   void putManySync(List<({Uint8List key, Bytes document})> entries) {
     _checkOpen();
     if (entries.isEmpty) return;
@@ -114,14 +165,120 @@ final class StorageEngine {
   /// Async facade over [deleteSync].
   Future<void> delete(Uint8List key) async => deleteSync(key);
 
-  /// Reads [key], or `null` when absent or deleted.
+  /// Reads [key], or `null` when absent, deleted, or shadowed by a tombstone.
   ///
-  /// The returned view points into the arena and stays valid until the next
-  /// flush drops the memtable.
+  /// Views returned from a segment point into the segment's buffer; views from
+  /// the memtable point into the arena. Both stay valid until the next flush.
   Bytes? get(Uint8List key) {
     final ref = _memtable.get(key);
-    if (ref == null || ref.length < 0) return null;
-    return _arena.view(ref.chunk, ref.offset, ref.length);
+    if (ref != null) {
+      return ref.length < 0 ? null : _arena.view(ref.chunk, ref.offset, ref.length);
+    }
+    for (var i = _segments.length - 1; i >= 0; i--) {
+      final hit = _segments[i].lookup(key);
+      if (hit == null) continue;
+      return hit.tombstone ? null : hit.document?.toBytes();
+    }
+    return null;
+  }
+
+  /// Flushes the memtable into a new segment and resets the WAL.
+  ///
+  /// Does nothing when the memtable is empty. Returns the new segment info.
+  SegmentInfo? flushSync() {
+    _checkOpen();
+    if (_memtable.length == 0) return null;
+
+    final builder = SegmentBuilder(blockTargetSize: blockTargetSize);
+    _memtable.forEach((key, chunk, offset, length) {
+      if (length < 0) {
+        builder.addTombstone(key);
+      } else {
+        builder.add(key, _arena.view(chunk, offset, length));
+      }
+    });
+    final bytes = builder.finish();
+
+    final name = _segmentName(_nextSegmentId++);
+    final file = _directory.openSync(name);
+    file.writeAllSync(bytes.asUint8List());
+    file.flushSync();
+
+    final info = SegmentInfo(
+      name: name,
+      entryCount: builder.docCount,
+      byteLength: bytes.length,
+    );
+    _manifest = ManifestStore(_directory).saveSync(<SegmentInfo>[
+      ..._segmentInfos,
+      info,
+    ]);
+
+    _segments.add(SegmentReader(bytes.asUint8List()));
+    _segmentInfos.add(info);
+
+    // Commit point passed: the WAL is no longer needed.
+    _walFile.truncateSync(0);
+    _walFile.flushSync();
+    _memtable.clear();
+    _arena = DocArena(chunkSize: _arenaChunkSize);
+    return info;
+  }
+
+  /// Async facade over [flushSync].
+  Future<SegmentInfo?> flush() async => flushSync();
+
+  /// Flushes when [shouldFlush] is true.
+  bool maybeFlushSync() {
+    if (!shouldFlush) return false;
+    flushSync();
+    return true;
+  }
+
+  /// Merges every segment into one, keeping the newest version of each key.
+  ///
+  /// This is a full compaction: because it rewrites every segment, tombstones
+  /// can be dropped entirely — after the merge no older copy of a deleted key
+  /// remains. Returns `false` when there was nothing to do.
+  bool compactSync() {
+    _checkOpen();
+    if (_segments.length < 2) return false;
+
+    final builder = SegmentBuilder(blockTargetSize: blockTargetSize);
+    final seen = MemTable();
+    for (var i = _segments.length - 1; i >= 0; i--) {
+      _segments[i].forEachEntry((key, document) {
+        if (seen.contains(key)) return;
+        seen.put(key, 0, 0, 0);
+        if (document == null) return; // tombstone: drop with the old data
+        builder.add(key, document.toBytes());
+      });
+    }
+
+    final oldNames = <String>[for (final info in _segmentInfos) info.name];
+    final bytes = builder.finish();
+    final name = _segmentName(_nextSegmentId++);
+    final file = _directory.openSync(name);
+    file.writeAllSync(bytes.asUint8List());
+    file.flushSync();
+
+    final info = SegmentInfo(
+      name: name,
+      entryCount: builder.docCount,
+      byteLength: bytes.length,
+    );
+    _manifest = ManifestStore(_directory).saveSync(<SegmentInfo>[info]);
+
+    _segments
+      ..clear()
+      ..add(SegmentReader(bytes.asUint8List()));
+    _segmentInfos
+      ..clear()
+      ..add(info);
+    for (final old in oldNames) {
+      _directory.deleteSync(old);
+    }
+    return true;
   }
 
   /// Makes everything appended so far durable.
@@ -133,12 +290,29 @@ final class StorageEngine {
   /// Async facade over [syncNow].
   Future<void> sync() async => syncNow();
 
-  /// Flushes pending writes. The underlying file stays owned by the caller.
+  /// Flushes pending writes. The directory stays owned by the caller.
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
     _walFile.flushSync();
   }
+
+  void _trackSegmentId(String name) {
+    if (!name.startsWith(segmentPrefix) || !name.endsWith(segmentSuffix)) {
+      return;
+    }
+    final digits = name.substring(
+      segmentPrefix.length,
+      name.length - segmentSuffix.length,
+    );
+    final id = int.tryParse(digits);
+    if (id != null && id >= _nextSegmentId) {
+      _nextSegmentId = id + 1;
+    }
+  }
+
+  static String _segmentName(int id) =>
+      '$segmentPrefix${id.toString().padLeft(6, '0')}$segmentSuffix';
 
   void _checkOpen() {
     if (_closed) throw StateError('engine is closed');

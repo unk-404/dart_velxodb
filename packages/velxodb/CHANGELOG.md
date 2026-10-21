@@ -31,4 +31,6 @@
 - Segments: immutable blocks plus a sorted primary index and a bloom filter,
   with a checksum over all metadata. `SegmentReader.find` is a bloom probe plus
   a binary search and returns a zero-copy document view.
+- Directory and manifest: two alternating manifest slots with generations and
+  checksums, plus `StorageEngine.flushSync()` and `compactSync()`.
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).

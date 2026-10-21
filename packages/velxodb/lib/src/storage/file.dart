@@ -49,6 +49,14 @@ abstract interface class SyncStorageFile {
 
   /// Makes previously appended bytes durable.
   void flushSync();
+
+  /// Reads the whole file as one buffer.
+  ///
+  /// Implementations may return a mapped view; callers must not mutate it.
+  Uint8List readAllSync();
+
+  /// Replaces the file contents with [bytes].
+  void writeAllSync(Uint8List bytes);
 }
 
 /// In-memory file implementing both the sync and async interfaces.
@@ -110,6 +118,20 @@ final class MemoryStorageFile implements StorageFile, SyncStorageFile {
   void flushSync() {
     _checkOpen();
     flushCount++;
+  }
+
+  @override
+  Uint8List readAllSync() {
+    _checkOpen();
+    return Uint8List.sublistView(_data, 0, _length);
+  }
+
+  @override
+  void writeAllSync(Uint8List bytes) {
+    _checkOpen();
+    _ensure(bytes.length);
+    _data.setRange(0, bytes.length, bytes);
+    _length = bytes.length;
   }
 
   @override
