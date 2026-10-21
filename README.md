@@ -90,14 +90,19 @@ download. The full breakdown is in the benchmark below.
   two processes cannot interleave writes into one log.
 - **Crash recovery.** WAL replay, then the manifest as the commit point. A frame
   torn by a crash is dropped whole; a committed transaction never splits.
-- **Bounded memory.** The memtable auto-flushes at 64 MB by default
-  (`VelxoDatabase.openSync(maxMemtableBytes: ...)`).
+- **Durability tiers.** `Durability.always` fsyncs every WAL frame (a batch or a
+  transaction is one frame, so one fsync covers the group); the default
+  `Durability.batched` fsyncs on flush, close and `db.sync()`, which is the
+  group-commit point; `Durability.none` leaves durability to the caller.
+- **Bounded memory and read amplification.** The memtable auto-flushes at 64 MB
+  and segments auto-compact at 4, both configurable on open; the write that
+  crosses a threshold pays for the work.
 - **Graceful shutdown.** `db.close(flush: true)` writes a segment so the next
   open reads the manifest instead of replaying the log.
 
-Not yet provided (tracked in `research/productization.md`): durability tiers and
-group commit, an automatic compaction policy, an integrity-check API, typed
-errors, multi-isolate concurrency, and web support.
+Not yet provided (tracked in `research/productization.md`): an integrity-check
+API, typed errors, multi-isolate concurrency, backup/restore, web support, and
+the Mongo-style facade.
 
 ## Status
 

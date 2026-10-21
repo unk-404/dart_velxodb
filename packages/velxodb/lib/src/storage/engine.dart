@@ -10,6 +10,24 @@ import 'memtable.dart';
 import 'segment.dart';
 import 'wal.dart';
 
+/// How long a committed write may stay in the OS page cache.
+enum Durability {
+  /// fsync after every WAL frame, including single puts and deletes.
+  ///
+  /// The strongest guarantee, the slowest mode. A batch or a transaction is
+  /// still one frame, so one fsync covers the whole group.
+  always,
+
+  /// fsync on flush, close and explicit `sync()` (default).
+  ///
+  /// A committed write survives a process crash; an OS or power failure may
+  /// lose the frames written since the last sync.
+  batched,
+
+  /// Never fsync automatically; the caller owns durability.
+  none,
+}
+
 /// Local storage engine: WAL → memtable → immutable segments.
 ///
 /// The core is synchronous and this is the only class that knows about all the
@@ -36,8 +54,10 @@ final class StorageEngine {
     int arenaChunkSize = 1 << 20,
     this.maxMemtableBytes = 64 << 20,
     this.blockTargetSize = 64 * 1024,
-    this.autoSync = false,
+    this.durability = Durability.batched,
     this.autoFlush = false,
+    this.autoCompact = true,
+    this.compactionThreshold = 4,
   }) : _directory = directory,
        _arenaChunkSize = arenaChunkSize,
        _walFile = directory.openSync(walFileName),
@@ -79,9 +99,18 @@ final class StorageEngine {
 
   /// Whether every write flushes the WAL before returning.
   ///
-  /// This is the durability knob: `false` (default) lets the caller batch
-  /// flushes, `true` pays one fsync per write.
-  final bool autoSync;
+  /// See [Durability]; use [durability] to configure, this getter is for
+  /// diagnostics.
+  bool get autoSync => durability == Durability.always;
+
+  /// Durability level for committed writes.
+  final Durability durability;
+
+  /// Whether crossing [compactionThreshold] segments compacts automatically.
+  final bool autoCompact;
+
+  /// Number of segments that triggers an automatic compaction after a flush.
+  final int compactionThreshold;
 
   /// Whether crossing [maxMemtableBytes] flushes to a segment immediately.
   ///
@@ -330,6 +359,14 @@ final class StorageEngine {
     _walFile.flushSync();
     _memtable.clear();
     _arena = DocArena(chunkSize: _arenaChunkSize);
+
+    // Bounded segment count: compaction runs on the write that crosses the
+    // threshold. This costs latency on that one write and keeps reads from
+    // degrading silently.
+    if (autoCompact && _segments.length >= compactionThreshold) {
+      compactSync();
+      return _segmentInfos.isEmpty ? info : _segmentInfos.last;
+    }
     return info;
   }
 
@@ -416,7 +453,7 @@ final class StorageEngine {
   }
 
   void _afterWrite() {
-    if (autoSync) _walFile.flushSync();
+    if (durability == Durability.always) _walFile.flushSync();
     if (autoFlush && shouldFlush) flushSync();
   }
 

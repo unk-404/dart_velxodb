@@ -24,19 +24,24 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
   /// The directory is locked exclusively: a second open of the same path fails
   /// fast instead of letting two writers corrupt the log. [autoFlush] bounds
   /// memtable memory; when it is crossed the write that crosses it pays for the
-  /// flush.
+  /// flush. [durability] defaults to [Durability.batched]; pass
+  /// [Durability.always] when a committed write must survive a power cut.
   static VelxoDatabase openSync(
     String path, {
     bool autoFlush = true,
     int maxMemtableBytes = 64 << 20,
-    bool autoSync = false,
+    Durability durability = Durability.batched,
+    bool autoCompact = true,
+    int compactionThreshold = 4,
   }) {
     final directory = LocalStorageDirectory(path);
     final catalog = CatalogStore(directory).loadSync();
     final engine = StorageEngine(
       directory: directory,
       autoFlush: autoFlush,
-      autoSync: autoSync,
+      autoCompact: autoCompact,
+      compactionThreshold: compactionThreshold,
+      durability: durability,
       maxMemtableBytes: maxMemtableBytes,
     );
     engine.openSync();
@@ -193,6 +198,15 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
 
   /// Async facade over [transactionSync].
   Future<T> transaction<T>(T Function() body) async => transactionSync(body);
+
+  /// fsyncs the WAL, making every committed frame durable.
+  ///
+  /// This is the group-commit point for [Durability.batched]: many writes are
+  /// covered by one fsync.
+  void syncNow() => _engine.syncNow();
+
+  /// Async facade over [syncNow].
+  Future<void> sync() async => syncNow();
 
   @override
   List<String> relationNames() =>

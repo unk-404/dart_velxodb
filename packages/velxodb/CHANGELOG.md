@@ -109,5 +109,9 @@
 - Safety defaults: the local directory takes an exclusive `LOCK` (a second open
   fails), `VelxoDatabase.openSync` auto-flushes at 64 MB by default, and
   `close(flush: true)` gives a fast graceful reopen.
+- Durability tiers: `Durability.always` fsyncs every WAL frame (one fsync per
+  batch or transaction), the default `Durability.batched` fsyncs on flush, close
+  and `db.sync()` (the group-commit point), and `Durability.none` leaves
+  durability to the caller. Segments now auto-compact at 4 by default.
 - READMEs rewritten (workspace and package).
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).

@@ -82,7 +82,10 @@ void main() {
   });
 
   test('autoSync keeps the WAL on disk after every write', () async {
-    final engine = StorageEngine(directory: directory, autoSync: true);
+    final engine = StorageEngine(
+      directory: directory,
+      durability: Durability.always,
+    );
     engine.openSync();
 
     engine.putSync(k('a'), doc('x'));
