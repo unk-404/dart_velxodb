@@ -11,11 +11,12 @@ import '../file.dart';
 ///
 /// This file is only compiled on the VM (see `storage_io.dart`); the web build
 /// gets a stub until the OPFS backend lands.
-final class LocalStorageDirectory implements SyncStorageDirectory {
-  /// Opens (and creates) the directory at [path] and takes an exclusive lock.
+final class LocalStorageDirectory implements SyncStorageDirectory {  /// Opens (and creates) the directory at [path] and takes a lock.
   ///
-  /// A second open of the same directory fails fast instead of letting two
-  /// engines corrupt each other's WAL and segments.
+  /// Writable opens take an exclusive lock; read-only opens take a shared one,
+  /// so many readers can coexist while a writer stays exclusive. A second
+  /// opener that conflicts fails fast instead of letting engines corrupt each
+  /// other's WAL and segments.
   LocalStorageDirectory(String path, {bool readOnly = false})
     : directory = Directory(path) {
     if (readOnly) {
@@ -26,16 +27,29 @@ final class LocalStorageDirectory implements SyncStorageDirectory {
       directory.createSync(recursive: true);
     }
     final key = _canonicalKey(directory);
-    if (!_openPaths.add(key)) {
-      throw VelxoLockedException(
-        'database is already open: ${directory.path}',
-      );
+    final state = _states.putIfAbsent(key, _LockState.new);
+    if (readOnly) {
+      if (state.writer) {
+        _dropIfIdle(key, state);
+        throw VelxoLockedException(
+          'database is already open for writing: ${directory.path}',
+        );
+      }
+      state.readers++;
+    } else {
+      if (state.writer || state.readers > 0) {
+        _dropIfIdle(key, state);
+        throw VelxoLockedException(
+          'database is already open: ${directory.path}',
+        );
+      }
+      state.writer = true;
     }
     try {
       final lock = File('${directory.path}${Platform.pathSeparator}LOCK');
       final handle = lock.openSync(mode: FileMode.append);
       try {
-        handle.lockSync(FileLock.exclusive);
+        handle.lockSync(readOnly ? FileLock.shared : FileLock.exclusive);
       } on FileSystemException {
         handle.closeSync();
         throw VelxoLockedException(
@@ -44,10 +58,26 @@ final class LocalStorageDirectory implements SyncStorageDirectory {
       }
       _lock = handle;
       _lockKey = key;
+      _readOnly = readOnly;
     } on Object {
-      _openPaths.remove(key);
+      _releaseState(key, readOnly);
       rethrow;
     }
+  }
+
+  static void _dropIfIdle(String key, _LockState state) {
+    if (state.readers == 0 && !state.writer) _states.remove(key);
+  }
+
+  static void _releaseState(String key, bool readOnly) {
+    final state = _states[key];
+    if (state == null) return;
+    if (readOnly) {
+      if (state.readers > 0) state.readers--;
+    } else {
+      state.writer = false;
+    }
+    _dropIfIdle(key, state);
   }
 
   static String _canonicalKey(Directory directory) {
@@ -69,13 +99,14 @@ final class LocalStorageDirectory implements SyncStorageDirectory {
 
   RandomAccessFile? _lock;
   String? _lockKey;
+  bool _readOnly = false;
 
-  /// Canonical paths currently open in this process.
+  /// Per-path reader count / writer flag in this process.
   ///
   /// POSIX advisory locks are process-wide, so locking the LOCK file does not
-  /// stop a second open inside the same process. This registry closes that gap;
-  /// the OS lock still covers other processes.
-  static final Set<String> _openPaths = <String>{};
+  /// distinguish two handles inside one process. This registry closes that gap;
+  /// the OS lock covers other processes.
+  static final Map<String, _LockState> _states = <String, _LockState>{};
 
   @override
   void closeSync() {
@@ -83,7 +114,7 @@ final class LocalStorageDirectory implements SyncStorageDirectory {
     _lock = null;
     final key = _lockKey;
     if (key != null) {
-      _openPaths.remove(key);
+      _releaseState(key, _readOnly);
       _lockKey = null;
     }
   }
@@ -225,4 +256,10 @@ final class _LocalMappedFile implements MappedFile {
     _region.close();
     _file.close();
   }
+}
+
+/// Readers and writer for one directory in this process.
+final class _LockState {
+  int readers = 0;
+  bool writer = false;
 }

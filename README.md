@@ -105,8 +105,8 @@ download. The full breakdown is in the benchmark below.
 - **Graceful shutdown.** `db.close(flush: true)` writes a segment so the next
   open reads the manifest instead of replaying the log.
 
-Not yet provided: concurrent read-only readers, web storage, the Mongo-style
-facade, storage-format migration, encryption, and geo/vector.
+Not yet provided: web storage, the Mongo-style facade, storage-format
+migration, encryption, and geo/vector.
 
 ### Concurrency contract
 
@@ -120,8 +120,8 @@ facade, storage-format migration, encryption, and geo/vector.
   boundary as copies, so zero-copy reads apply inside the worker.
 - `VelxoDatabase.openSync(path, readOnly: true)` replays the WAL without
   truncating it and rejects every write (`VelxoReadOnlyException`), including
-  catalog changes. A read-only open still takes the exclusive directory lock, so
-  one opener at a time; concurrent readers need shared locks or MVCC.
+  catalog changes. A read-only open takes a shared directory lock, so many
+  readers can coexist; a writable open is exclusive.
 - `db.backupSync(targetDirectory)` flushes first and copies a consistent file
   set into an empty target; `copyDatabase(source, target)` restores it. Both work
   at the storage-directory level, so the same code backs local and future
@@ -165,12 +165,11 @@ These are real boundaries, not hidden behavior:
    and transactions over the protocol.
 5. **Flush uses a fresh `Isolate.run` per build.** Planned: a long-lived builder
    worker reused across flushes.
-6. **Read-only readers are exclusive.** Planned: shared OS locks so many readers
-   can open one database.
-7. **Full-copy backup only.** Planned: incremental backup and backup of a live
+6. **Full-copy backup only.** Planned: incremental backup and backup of a live
    database owned by another process.
-8. **Indexed range is slower than isar (1.6x).** Planned: optimize the posting
-   range path before claiming range parity.
+7. **Indexed range is still slower than isar (about 1.25x).** The redundant
+   per-hit value check was removed; closing the rest needs a covering index or a
+   cheaper document fetch for range hits.
 
 ## Status
 
@@ -191,7 +190,8 @@ Pre-alpha, usable end to end on the VM.
 | Deferred flush/compaction (single isolate) | done |
 | Background-isolate segment build | done |
 | Worker isolate + RPC facade (one writer, many clients) | done |
-| Read-only opens + full backup/restore | done |
+| Read-only opens + shared reader locks | done |
+| Full backup/restore | done |
 | Full-text and n-gram primitives | done |
 | Web (OPFS) sync engine, HTTP backends | planned |
 | Mongo-style client facade | planned |
@@ -319,17 +319,17 @@ warm memtable:
 | Engine reopen + 1k reads | 2.2 ms vs sled 87.3 ms |
 | Engine range scan | sled 2.6 ms / 10k (3.84M keys/s); velxodb has no engine-level cursor |
 | Engine disk | 15.4 MB vs sled 63.4 MB |
-| DB import + index | 1.59 s / 100k (63k docs/s) vs isar 2.05 s (49k docs/s) |
-| DB point reads | 23.9 ms / 20k (838k reads/s) vs isar 55.4 ms (361k reads/s) |
-| DB indexed equality | 1.4 ms / 1k (704k q/s) vs isar 4.6 ms (220k q/s) |
-| DB indexed range | 12.9 ms / 12k (932k q/s) vs isar 8.0 ms (**1.49M q/s**) |
-| DB reopen + 1k reads | 2.8 ms vs isar 4.0 ms |
+| DB import + index | 1.55 s / 100k (64k docs/s) vs isar 2.08 s (48k docs/s) |
+| DB point reads | 23.4 ms / 20k (855k reads/s) vs isar 61.3 ms (326k reads/s) |
+| DB indexed equality | 1.3 ms / 1k (769k q/s) vs isar 4.7 ms (213k q/s) |
+| DB indexed range | 11.0 ms / 12k (1.09M q/s) vs isar 8.8 ms (**1.36M q/s**) |
+| DB reopen + 1k reads | 2.7 ms vs isar 4.4 ms |
 | DB disk | 19.3 MB vs isar 26.2 MB |
 
 Where velxodb loses, stated plainly:
 
-- **Indexed range.** isar answers a 12k-hit string range in 8.0 ms; velxodb
-  takes 12.9 ms. We win equality, lose range.
+- **Indexed range.** isar answers a 12k-hit string range in 8.8 ms; velxodb
+  takes 11.0 ms. We win equality and point reads, lose range.
 - **No engine-level KV range cursor.** sled scans 10k keys in 2.6 ms; our
   collection cursor exists, but `StorageEngine` does not expose a public raw
   range API. The row is sled-only on purpose.
@@ -424,10 +424,13 @@ corrupt segment).
 
 Remaining, in order:
 
-1. **Concurrent readers** — shared locks/MVCC so read-only handles do not take
-   the exclusive lock; then the process-wide writer guard listed above.
-2. **Index-range performance** — isar is currently 1.6x faster on the 12k-hit
-   range benchmark; then the engine-level KV range cursor.
+1. **Process-wide writer guard + MVCC** — a direct open from another isolate in
+   the same process is still not detected on POSIX, and reads block writes;
+   planned: a process-wide guard and snapshots so readers do not serialize
+   behind the writer.
+2. **Index-range performance** — isar is still about 1.25x faster on the
+   12k-hit range benchmark; close it with a covering index or cheaper document
+   fetch, then add the engine-level KV range cursor.
 3. **Web storage** (OPFS in a worker) instead of the current stub.
 4. **Mongo-style facade** over the existing query layer.
 5. **Docs site and runnable examples**, plus long-running stress/fuzz jobs.

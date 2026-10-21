@@ -149,13 +149,16 @@
 - Read-only opens: `VelxoDatabase.openSync(path, readOnly: true)` replays the
   WAL without truncating, rejects engine writes and catalog changes with
   `VelxoReadOnlyException`, and refuses to create a missing database or
-  collection. The exclusive directory lock is still taken, so one opener at a
-  time (shared readers are planned).
+  collection. Readers take a shared directory lock (many readers coexist);
+  writers stay exclusive.
 - Backup/restore: `db.backupSync(targetDirectory)` flushes and copies a
   consistent file set (skipping LOCK) into an empty target;
   `copyDatabase(source, target)` restores it. Both work on storage directories,
   so the same code fits local and future object-store targets. Full copy only,
   not incremental.
+- Index range: removed the redundant per-hit document decode and value
+  comparison; the cursor bounds already enforce the range. The 12k-hit
+  comparison drops from 12.9 ms to 11.0 ms (isar is still ~1.25x faster).
 - Single-writer lock now also works on POSIX: an in-process registry of
   canonical paths complements the OS lock, which is process-wide there, so a
   second open inside the same process is rejected on Linux and macOS too.

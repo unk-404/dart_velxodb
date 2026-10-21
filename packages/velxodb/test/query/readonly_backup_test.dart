@@ -80,6 +80,33 @@ void main() {
         throwsA(isA<VelxoNotFoundException>()),
       );
     });
+
+    test('multiple readers coexist and block a writer', () async {
+      final path = '${root.path}${Platform.pathSeparator}db';
+      final writable = VelxoDatabase.openSync(path);
+      writable.collection('items').putSync(k('a'), doc('alpha'));
+      await writable.close(flush: true);
+
+      final first = VelxoDatabase.openSync(path, readOnly: true);
+      final second = VelxoDatabase.openSync(path, readOnly: true);
+      expect(textOf(first.collection('items').get(k('a'))), 'alpha');
+      expect(textOf(second.collection('items').get(k('a'))), 'alpha');
+
+      expect(
+        () => VelxoDatabase.openSync(path),
+        throwsA(isA<VelxoLockedException>()),
+      );
+
+      await first.close();
+      await second.close();
+
+      final writer = VelxoDatabase.openSync(path);
+      expect(
+        () => VelxoDatabase.openSync(path, readOnly: true),
+        throwsA(isA<VelxoLockedException>()),
+      );
+      await writer.close();
+    });
   });
 
   group('backup and restore', () {

@@ -200,8 +200,8 @@ final class Collection {
   /// Looks up primary keys whose indexed [fieldId] lies in `[from, to)`.
   ///
   /// Bounds are encoded with the same order-preserving codec, so this is a
-  /// contiguous range over the index namespace. Entries are verified against
-  /// the document for the same reason [lookupByIndexSync] does it.
+  /// contiguous range over the index namespace; the cursor's bounds already
+  /// enforce the range, and each hit is only re-read to return its document.
   List<ScanEntry> lookupByIndexRangeSync(
     int fieldId, {
     Object? from,
@@ -243,16 +243,6 @@ final class Collection {
       final primaryKey = Uint8List.sublistView(raw, encodedLength);
       final document = get(primaryKey);
       if (document == null) continue;
-      final value = definition.readValue(DocView.parse(document.asUint8List()));
-      if (value == null) continue;
-      if (from != null) {
-        final comparison = definition.compareValues(value, from);
-        if (comparison < 0 || (comparison == 0 && !includeFrom)) continue;
-      }
-      if (to != null) {
-        final comparison = definition.compareValues(value, to);
-        if (comparison > 0 || (comparison == 0 && !includeTo)) continue;
-      }
       out.add((key: primaryKey, value: document));
       if (limit != null && out.length >= limit) break;
     }
