@@ -12,6 +12,11 @@ Uint8List key(String value) => Uint8List.fromList(value.codeUnits);
 
 Bytes doc(String text) => (DocBuilder(schemaId: 1)..putString(1, text)).finish();
 
+Bytes indexedDoc(String text, String sender) => (DocBuilder(schemaId: 1)
+      ..putString(1, text)
+      ..putString(2, sender))
+    .finish();
+
 String? textOf(Bytes? value) =>
     value == null ? null : DocView.parse(value.asUint8List()).getString(1);
 
@@ -47,5 +52,38 @@ void main() {
     expect(textOf(await itemsAgain.get(key('c'))), 'gamma');
     expect(await itemsAgain.get(key('b')), isNull);
     await reopened.close();
+  });
+
+  test('web secondary indexes support equality and range', () async {
+    final root = 'velxodb-index-${DateTime.now().microsecondsSinceEpoch}';
+    final db = await VelxoWebDatabase.open(root: root);
+    final items = await db.collection('items');
+    await items.createIndex(2, VxsType.string);
+    await items.put(key('a'), indexedDoc('alpha', 'u1'));
+    await items.put(key('b'), indexedDoc('beta', 'u1'));
+    await items.put(key('c'), indexedDoc('gamma', 'u2'));
+    await items.put(key('d'), indexedDoc('delta', 'u3'));
+
+    final bySender = await items.lookupByIndex(2, 'u1');
+    expect(
+      bySender.map((entry) => String.fromCharCodes(entry.key)).toList(),
+      <String>['a', 'b'],
+    );
+    final range = await items.lookupByIndexRange(
+      2,
+      from: 'u1',
+      to: 'u3',
+      includeTo: false,
+    );
+    expect(
+      range.map((entry) => String.fromCharCodes(entry.key)).toSet(),
+      <String>{'a', 'b', 'c'},
+    );
+
+    await items.put(key('e'), indexedDoc('epsilon', 'u2'));
+    expect((await items.lookupByIndex(2, 'u2')).length, 2);
+    await items.delete(key('c'));
+    expect((await items.lookupByIndex(2, 'u2')).length, 1);
+    await db.close();
   });
 }

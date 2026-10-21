@@ -181,6 +181,11 @@
   segments asynchronously, with newest-wins and tombstone handling. Chrome tests
   cover CRUD/scan/page and a reopen; secondary indexes and transactions are the
   next Web step.
+- Web/OPFS indexes: `createIndex`, `lookupByIndex` and `lookupByIndexRange` on
+  `WebCollection`, with the same order-preserving value codecs and posting key
+  layout as the VM, plus backfill. Index maintenance runs on put/delete and
+  lookups verify the document value. Chrome tests cover equality, range, update
+  and delete.
 - Single-writer lock now also works on POSIX: an in-process registry of
   canonical paths complements the OS lock, which is process-wide there, so a
   second open inside the same process is rejected on Linux and macOS too.
