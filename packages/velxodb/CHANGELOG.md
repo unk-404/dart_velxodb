@@ -129,5 +129,13 @@
 - `checkSync` no longer opens a second WAL handle (which closed the shared
   handle in in-memory directories), and opening a segment that fails to decode
   now raises `VelxoCorruptException`.
+- Deferred maintenance: `VelxoDatabase.openSync(deferredMaintenance: true)`
+  moves the threshold-triggered flush and compaction off the write call through
+  a `MaintenanceScheduler` (microtask today, worker isolate later). Memory may
+  overshoot the threshold briefly; past 4x it flushes inline. WAL replay keeps
+  pending writes safe across close or crash.
+- Single-writer lock now also works on POSIX: an in-process registry of
+  canonical paths complements the OS lock, which is process-wide there, so a
+  second open inside the same process is rejected on Linux and macOS too.
 - READMEs rewritten (workspace and package).
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).

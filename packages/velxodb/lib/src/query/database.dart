@@ -6,6 +6,7 @@ import '../storage/check.dart';
 import '../storage/directory.dart';
 import '../storage/engine.dart';
 import '../storage/io/storage_io.dart';
+import '../storage/maintenance.dart';
 import 'catalog.dart';
 import 'collection.dart';
 import 'cursor.dart';
@@ -31,6 +32,8 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
   /// memtable memory; when it is crossed the write that crosses it pays for the
   /// flush. [durability] defaults to [Durability.batched]; pass
   /// [Durability.always] when a committed write must survive a power cut.
+  /// With [deferredMaintenance], the flush/compaction that crosses a threshold
+  /// runs after the triggering write returns instead of inline.
   static VelxoDatabase openSync(
     String path, {
     bool autoFlush = true,
@@ -38,6 +41,7 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
     Durability durability = Durability.batched,
     bool autoCompact = true,
     int compactionThreshold = 4,
+    bool deferredMaintenance = false,
   }) {
     final directory = LocalStorageDirectory(path);
     StorageEngine? engine;
@@ -50,6 +54,9 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
         compactionThreshold: compactionThreshold,
         durability: durability,
         maxMemtableBytes: maxMemtableBytes,
+        maintenanceScheduler: deferredMaintenance
+            ? const MicrotaskMaintenanceScheduler()
+            : null,
       );
       engine.openSync();
       return VelxoDatabase._(directory, engine, catalog);

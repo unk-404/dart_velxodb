@@ -105,9 +105,22 @@ download. The full breakdown is in the benchmark below.
 - **Graceful shutdown.** `db.close(flush: true)` writes a segment so the next
   open reads the manifest instead of replaying the log.
 
-Not yet provided (tracked in `research/productization.md`): multi-isolate
-concurrency, backup/restore, web support, the Mongo-style facade, and the
-crash-point matrix in CI.
+Not yet provided: a multi-isolate worker, backup/restore, web support, the
+Mongo-style facade, storage-format migration, encryption, and geo/vector.
+
+### Concurrency contract
+
+- One open database belongs to one isolate. Reads and writes are synchronous
+  and single-writer; there is no cross-isolate sharing and no concurrent writer.
+- `VelxoDatabase.openSync(deferredMaintenance: true)` moves the flush/compaction
+  triggered by a threshold crossing off the write call: the write returns first,
+  the segment is built on a `MaintenanceScheduler` (a microtask today). Memory
+  may overshoot the threshold until it runs; past 4x the threshold the engine
+  flushes inline so a synchronous write loop cannot grow without bound.
+- The WAL keeps every write safe while maintenance is pending, so closing or
+  crashing before it runs recovers normally.
+- `MaintenanceScheduler` is the seam for the real worker isolate: the engine
+  does not change when a background isolate implements it.
 
 ## Status
 
@@ -124,7 +137,9 @@ Pre-alpha, usable end to end on the VM.
 | Reference bindings (restrict / cascade) | done |
 | Typed graph edges + depth-limited BFS walk | done |
 | Object-store backend (async, same segment format) | done |
-| Full-text and n-gram primitives | planned |
+| Crash-point matrix (deterministic, in CI) | done |
+| Deferred flush/compaction (single isolate) | done |
+| Full-text and n-gram primitives | done |
 | Web (OPFS) sync engine, HTTP backends | planned |
 | Mongo-style client facade | planned |
 | Vector / geo field types | planned |
@@ -348,14 +363,16 @@ reopen                            0ms          2 (1/0/0/1)      0.0MB      0.0MB
 Already shipped: VXS format, WAL + segments + mmap, query layer, secondary
 indexes, typed collections, references, graph, full-text, object-store engine,
 transactions, single-writer lock, durability tiers, auto-flush, auto-compaction,
-integrity check, typed errors, and a deterministic crash-point matrix in CI
-(every byte of a torn transaction frame, segment-before-manifest, torn manifest
-fallback, pre-truncate replay, corrupt segment).
+deferred maintenance, integrity check, typed errors, and a deterministic
+crash-point matrix in CI (every byte of a torn transaction frame,
+segment-before-manifest, torn manifest fallback, pre-truncate replay, corrupt
+segment).
 
 Remaining, in order:
 
-1. **Concurrency model** — an isolate worker (one writer, many readers) or an
-   explicit single-isolate contract with a background flush/compaction thread.
+1. **Worker isolate** — implement `MaintenanceScheduler` on a background isolate
+   (segment building off the main isolate) and then a shared-nothing RPC facade
+   for one writer / many readers across isolates.
 2. **Backup / restore** and read-only opens.
 3. **Index-range performance** — isar is currently 1.6x faster on the 12k-hit
    range benchmark; then the engine-level KV range cursor.

@@ -18,28 +18,67 @@ final class LocalStorageDirectory implements SyncStorageDirectory {
   /// engines corrupt each other's WAL and segments.
   LocalStorageDirectory(String path) : directory = Directory(path) {
     directory.createSync(recursive: true);
-    final lock = File('${directory.path}${Platform.pathSeparator}LOCK');
-    final handle = lock.openSync(mode: FileMode.append);
-    try {
-      handle.lockSync(FileLock.exclusive);
-    } on FileSystemException {
-      handle.closeSync();
+    final key = _canonicalKey(directory);
+    if (!_openPaths.add(key)) {
       throw VelxoLockedException(
         'database is already open: ${directory.path}',
       );
     }
-    _lock = handle;
+    try {
+      final lock = File('${directory.path}${Platform.pathSeparator}LOCK');
+      final handle = lock.openSync(mode: FileMode.append);
+      try {
+        handle.lockSync(FileLock.exclusive);
+      } on FileSystemException {
+        handle.closeSync();
+        throw VelxoLockedException(
+          'database is already open: ${directory.path}',
+        );
+      }
+      _lock = handle;
+      _lockKey = key;
+    } on Object {
+      _openPaths.remove(key);
+      rethrow;
+    }
+  }
+
+  static String _canonicalKey(Directory directory) {
+    var path = directory.absolute.path;
+    try {
+      path = directory.resolveSymbolicLinksSync();
+    } on FileSystemException {
+      // The directory may not be resolvable on a virtual filesystem; the
+      // absolute path is still a stable key for this process.
+    }
+    if (Platform.isWindows || Platform.isMacOS) {
+      path = path.toLowerCase();
+    }
+    return path;
   }
 
   /// Root directory.
   final Directory directory;
 
   RandomAccessFile? _lock;
+  String? _lockKey;
+
+  /// Canonical paths currently open in this process.
+  ///
+  /// POSIX advisory locks are process-wide, so locking the LOCK file does not
+  /// stop a second open inside the same process. This registry closes that gap;
+  /// the OS lock still covers other processes.
+  static final Set<String> _openPaths = <String>{};
 
   @override
   void closeSync() {
     _lock?.closeSync();
     _lock = null;
+    final key = _lockKey;
+    if (key != null) {
+      _openPaths.remove(key);
+      _lockKey = null;
+    }
   }
 
   @override

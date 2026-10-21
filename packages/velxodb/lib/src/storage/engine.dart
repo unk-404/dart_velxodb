@@ -7,6 +7,7 @@ import 'arena.dart';
 import 'check.dart';
 import 'directory.dart';
 import 'file.dart';
+import 'maintenance.dart';
 import 'manifest.dart';
 import 'memtable.dart';
 import 'segment.dart';
@@ -60,6 +61,7 @@ final class StorageEngine {
     this.autoFlush = false,
     this.autoCompact = true,
     this.compactionThreshold = 4,
+    this.maintenanceScheduler,
   }) : _directory = directory,
        _arenaChunkSize = arenaChunkSize,
        _walFile = directory.openSync(walFileName),
@@ -114,11 +116,23 @@ final class StorageEngine {
   /// Number of segments that triggers an automatic compaction after a flush.
   final int compactionThreshold;
 
-  /// Whether crossing [maxMemtableBytes] flushes to a segment immediately.
+  /// Whether crossing [maxMemtableBytes] flushes to a segment automatically.
   ///
-  /// The flush is synchronous; applications that care about latency should
-  /// leave this off and call [maybeFlushSync] from a background isolate.
+  /// With a [maintenanceScheduler] the flush is deferred, so the write that
+  /// crosses the threshold returns first. Without one it runs inline.
   final bool autoFlush;
+
+  /// Optional scheduler for deferred flush/compaction.
+  ///
+  /// Today the engine is single-isolate: the scheduler is a seam for a future
+  /// worker isolate. With [MicrotaskMaintenanceScheduler] the work still runs
+  /// on this isolate, but after the triggering write returns.
+  final MaintenanceScheduler? maintenanceScheduler;
+
+  bool _maintenanceScheduled = false;
+
+  /// Whether deferred maintenance is scheduled but has not run yet.
+  bool get maintenanceScheduled => _maintenanceScheduled;
 
   /// The memtable, exposed for flushing and tests.
   MemTable get memtable => _memtable;
@@ -567,7 +581,21 @@ final class StorageEngine {
 
   void _afterWrite() {
     if (durability == Durability.always) _walFile.flushSync();
-    if (autoFlush && shouldFlush) flushSync();
+    if (!autoFlush || !shouldFlush) return;
+    final scheduler = maintenanceScheduler;
+    // A long synchronous write loop never yields, so a deferred flush must not
+    // let memory grow without bound. Past 4x the threshold, flush inline.
+    if (scheduler == null || memoryBytes > maxMemtableBytes * 4) {
+      flushSync();
+      return;
+    }
+    if (_maintenanceScheduled) return;
+    _maintenanceScheduled = true;
+    scheduler.schedule(() {
+      _maintenanceScheduled = false;
+      if (_closed) return;
+      flushSync();
+    });
   }
 
   void _writeFile(String name, Uint8List bytes) {
