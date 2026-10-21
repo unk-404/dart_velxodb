@@ -31,7 +31,15 @@ final class MemoryStorageDirectory implements SyncStorageDirectory {
   @override
   SyncStorageFile openSync(String name, {bool create = true}) {
     final existing = _files[name];
-    if (existing != null) return existing;
+    if (existing != null) {
+      if (!existing.isClosed) return existing;
+      // Closing a file must not lose its bytes: reopen over a fresh handle
+      // that starts with the same contents, mirroring a real filesystem.
+      final restored = MemoryStorageFile(existing.bytes.length + 64);
+      restored.writeAllSync(existing.bytes);
+      _files[name] = restored;
+      return restored;
+    }
     if (!create) throw StateError('no such file: $name');
     final file = MemoryStorageFile();
     _files[name] = file;

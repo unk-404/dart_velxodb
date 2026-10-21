@@ -209,6 +209,9 @@ final class _NullStorageFile implements SyncStorageFile {
 
   @override
   void writeAllSync(Uint8List bytes) => _length = bytes.length;
+
+  @override
+  void closeSync() {}
 }
 
 /// Hands out the null WAL file and refuses everything else.

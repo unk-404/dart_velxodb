@@ -19,6 +19,7 @@ export 'src/storage/bloom.dart';
 export 'src/storage/directory.dart';
 export 'src/storage/engine.dart';
 export 'src/storage/file.dart';
+export 'src/storage/io/storage_io.dart';
 export 'src/storage/manifest.dart';
 export 'src/storage/memtable.dart';
 export 'src/storage/segment.dart';

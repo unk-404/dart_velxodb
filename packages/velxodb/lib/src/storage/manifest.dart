@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import '../serde/crc32c.dart';
 import '../serde/vxs.dart';
 import 'directory.dart';
+import 'file.dart';
 
 /// First byte of a manifest.
 const int manifestMagic = 0x4D;
@@ -146,8 +147,10 @@ final class ManifestStore {
     Manifest? best;
     for (var slot = 0; slot < slotNames.length; slot++) {
       if (!directory.existsSync(slotNames[slot])) continue;
+      SyncStorageFile? file;
       try {
-        final bytes = directory.openSync(slotNames[slot]).readAllSync();
+        file = directory.openSync(slotNames[slot]);
+        final bytes = file.readAllSync();
         if (bytes.isEmpty) continue;
         final manifest = Manifest.decode(bytes);
         if (best == null || manifest.generation > best.generation) {
@@ -156,6 +159,8 @@ final class ManifestStore {
       } on VxsFormatException {
         // A torn slot is expected after a crash; the other slot is authoritative.
         continue;
+      } finally {
+        file?.closeSync();
       }
     }
     return best;
@@ -167,8 +172,12 @@ final class ManifestStore {
     final generation = (current?.generation ?? 0) + 1;
     final manifest = Manifest(generation: generation, segments: segments);
     final file = directory.openSync(slotNames[generation % 2]);
-    file.writeAllSync(manifest.encode());
-    file.flushSync();
+    try {
+      file.writeAllSync(manifest.encode());
+      file.flushSync();
+    } finally {
+      file.closeSync();
+    }
     return manifest;
   }
 }

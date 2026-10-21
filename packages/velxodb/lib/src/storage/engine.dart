@@ -36,6 +36,8 @@ final class StorageEngine {
     int arenaChunkSize = 1 << 20,
     this.maxMemtableBytes = 64 << 20,
     this.blockTargetSize = 64 * 1024,
+    this.autoSync = false,
+    this.autoFlush = false,
   }) : _directory = directory,
        _arenaChunkSize = arenaChunkSize,
        _walFile = directory.openSync(walFileName),
@@ -71,6 +73,18 @@ final class StorageEngine {
   /// Target block size when building a segment.
   final int blockTargetSize;
 
+  /// Whether every write flushes the WAL before returning.
+  ///
+  /// This is the durability knob: `false` (default) lets the caller batch
+  /// flushes, `true` pays one fsync per write.
+  final bool autoSync;
+
+  /// Whether crossing [maxMemtableBytes] flushes to a segment immediately.
+  ///
+  /// The flush is synchronous; applications that care about latency should
+  /// leave this off and call [maybeFlushSync] from a background isolate.
+  final bool autoFlush;
+
   /// The memtable, exposed for flushing and tests.
   MemTable get memtable => _memtable;
 
@@ -96,7 +110,7 @@ final class StorageEngine {
     if (manifest != null) {
       _manifest = manifest;
       for (final info in manifest.segments) {
-        final bytes = _directory.openSync(info.name).readAllSync();
+        final bytes = _readFile(info.name);
         _segments.add(SegmentReader(bytes));
         _segmentInfos.add(info);
         _trackSegmentId(info.name);
@@ -129,6 +143,7 @@ final class StorageEngine {
     _wal.appendPutSync(key, bytes);
     final ref = _arena.append(bytes);
     _memtable.put(key, ref.chunk, ref.offset, ref.length);
+    _afterWrite();
   }
 
   /// Async facade over [putSync].
@@ -148,6 +163,7 @@ final class StorageEngine {
       final ref = _arena.append(entry.document.asUint8List());
       _memtable.put(entry.key, ref.chunk, ref.offset, ref.length);
     }
+    _afterWrite();
   }
 
   /// Async facade over [putManySync].
@@ -160,6 +176,7 @@ final class StorageEngine {
     _checkOpen();
     _wal.appendDeleteSync(key);
     _memtable.putTombstone(key);
+    _afterWrite();
   }
 
   /// Async facade over [deleteSync].
@@ -200,9 +217,7 @@ final class StorageEngine {
     final bytes = builder.finish();
 
     final name = _segmentName(_nextSegmentId++);
-    final file = _directory.openSync(name);
-    file.writeAllSync(bytes.asUint8List());
-    file.flushSync();
+    _writeFile(name, bytes.asUint8List());
 
     final info = SegmentInfo(
       name: name,
@@ -258,9 +273,7 @@ final class StorageEngine {
     final oldNames = <String>[for (final info in _segmentInfos) info.name];
     final bytes = builder.finish();
     final name = _segmentName(_nextSegmentId++);
-    final file = _directory.openSync(name);
-    file.writeAllSync(bytes.asUint8List());
-    file.flushSync();
+    _writeFile(name, bytes.asUint8List());
 
     final info = SegmentInfo(
       name: name,
@@ -295,6 +308,31 @@ final class StorageEngine {
     if (_closed) return;
     _closed = true;
     _walFile.flushSync();
+    _walFile.closeSync();
+  }
+
+  void _afterWrite() {
+    if (autoSync) _walFile.flushSync();
+    if (autoFlush && shouldFlush) flushSync();
+  }
+
+  Uint8List _readFile(String name) {
+    final file = _directory.openSync(name);
+    try {
+      return file.readAllSync();
+    } finally {
+      file.closeSync();
+    }
+  }
+
+  void _writeFile(String name, Uint8List bytes) {
+    final file = _directory.openSync(name);
+    try {
+      file.writeAllSync(bytes);
+      file.flushSync();
+    } finally {
+      file.closeSync();
+    }
   }
 
   void _trackSegmentId(String name) {

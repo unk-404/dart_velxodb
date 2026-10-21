@@ -57,6 +57,9 @@ abstract interface class SyncStorageFile {
 
   /// Replaces the file contents with [bytes].
   void writeAllSync(Uint8List bytes);
+
+  /// Releases the file handle. Subsequent operations throw [StateError].
+  void closeSync();
 }
 
 /// In-memory file implementing both the sync and async interfaces.
@@ -134,6 +137,14 @@ final class MemoryStorageFile implements StorageFile, SyncStorageFile {
     _length = bytes.length;
   }
 
+  /// Whether the file has been closed.
+  bool get isClosed => _closed;
+
+  @override
+  void closeSync() {
+    _closed = true;
+  }
+
   @override
   Future<int> get length async => lengthSync;
 
@@ -151,9 +162,7 @@ final class MemoryStorageFile implements StorageFile, SyncStorageFile {
   Future<void> flush() async => flushSync();
 
   @override
-  Future<void> close() async {
-    _closed = true;
-  }
+  Future<void> close() async => closeSync();
 
   void _ensure(int needed) {
     if (needed <= _data.length) return;
