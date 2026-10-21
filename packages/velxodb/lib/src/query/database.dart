@@ -152,5 +152,13 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
   bool compactSync() => _engine.compactSync();
 
   /// Closes the engine and unmaps segments.
-  Future<void> close() async => _engine.close();
+  ///
+  /// [flush] writes the memtable to a segment first. A graceful shutdown should
+  /// pass `flush: true`: reopening then only reads the manifest and maps
+  /// segments, instead of replaying the whole WAL (1.5 s vs 11 ms for 100k
+  /// unflushed documents in the comparison harness).
+  Future<void> close({bool flush = false}) async {
+    if (flush) flushSync();
+    await _engine.close();
+  }
 }

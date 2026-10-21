@@ -94,5 +94,8 @@
   requests, churn of 120k changes in 123 requests, reopen in 2 requests.
 - Backend compatibility test: a segment written by the local engine opens in the
   object-store engine and vice versa, proving the format is I/O-agnostic.
+- `VelxoDatabase.close(flush: true)` for graceful shutdown: reopening then reads
+  the manifest and maps segments instead of replaying the whole WAL (11 ms vs
+  1.5 s for 100k unflushed documents).
 - READMEs rewritten (workspace and package).
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).

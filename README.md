@@ -109,6 +109,9 @@ final messages = db.collection('messages');
 final key = Uint8List.fromList('m1'.codeUnits);
 messages.putSync(key, encodedDocument);
 final document = messages.getSync(key);
+
+await db.close(flush: true); // graceful shutdown: reopen reads the manifest,
+                             // not a full WAL replay
 ```
 
 ### Queries
