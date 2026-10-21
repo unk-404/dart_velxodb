@@ -1,10 +1,11 @@
 import 'dart:typed_data';
 
+import '../backup/backup.dart';
+import '../errors.dart';
 import '../serde/schema.dart';
 import '../serde/view.dart';
 import '../storage/background_segment.dart';
-import '../storage/check.dart';
-import '../storage/directory.dart';
+import '../storage/check.dart';import '../storage/directory.dart';
 import '../storage/engine.dart';
 import '../storage/io/storage_io.dart';
 import '../storage/maintenance.dart';
@@ -23,8 +24,19 @@ import 'reference.dart';
 /// kind of prefix to secondary indexes and relations, and records reference
 /// bindings.
 final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
-  VelxoDatabase._(this._directory, this._engine, this._catalog)
-    : _catalogStore = CatalogStore(_directory);
+  VelxoDatabase._(
+    this._directory,
+    this._engine,
+    this._catalog, {
+    bool readOnly = false,
+  }) : _readOnly = readOnly,
+       _catalogStore = CatalogStore(_directory, readOnly: readOnly);
+
+  final bool _readOnly;
+  bool _closed = false;
+
+  /// Whether this handle was opened read-only.
+  bool get readOnly => _readOnly;
 
   /// Opens (and creates) the database at [path].
   ///
@@ -45,11 +57,12 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
     int compactionThreshold = 4,
     bool deferredMaintenance = false,
     bool backgroundFlush = false,
+    bool readOnly = false,
   }) {
-    final directory = LocalStorageDirectory(path);
+    final directory = LocalStorageDirectory(path, readOnly: readOnly);
     StorageEngine? engine;
     try {
-      final catalog = CatalogStore(directory).loadSync();
+      final catalog = CatalogStore(directory, readOnly: readOnly).loadSync();
       engine = StorageEngine(
         directory: directory,
         autoFlush: autoFlush,
@@ -63,9 +76,10 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
         backgroundSegmentBuilder: backgroundFlush
             ? buildSegmentInBackground
             : null,
+        readOnly: readOnly,
       );
       engine.openSync();
-      return VelxoDatabase._(directory, engine, catalog);
+      return VelxoDatabase._(directory, engine, catalog, readOnly: readOnly);
     } on Object {
       // A failed open must not leak the directory lock.
       if (engine != null) {
@@ -106,6 +120,9 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
     if (cached != null) return cached;
     var id = _catalog.idOf(name);
     if (id == null) {
+      if (_readOnly) {
+        throw VelxoNotFoundException('no such collection: $name');
+      }
       _catalog = _catalog.withCollection(name);
       _catalogStore.saveSync(_catalog);
       id = _catalog.idOf(name)!;
@@ -248,6 +265,20 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
   bool flushSync() => _engine.flushSync() != null;
   /// Async facade over [flushSync].
   Future<bool> flush() async => flushSync();
+
+  /// Writes a consistent copy of this database into [target].
+  ///
+  /// A writable database is flushed first, so the copy has an empty WAL and a
+  /// committed manifest. [target] must be empty (its backend may own a LOCK
+  /// file); close it after the call. Read-only handles can be backed up without
+  /// flushing.
+  BackupReport backupSync(SyncStorageDirectory target) {
+    if (_closed) {
+      throw const VelxoClosedException('database is closed');
+    }
+    if (!_readOnly) flushSync();
+    return copyDatabase(_directory, target);
+  }
 
   /// Merges segments and drops tombstones.
   bool compactSync() => _engine.compactSync();
@@ -455,7 +486,9 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
 
   /// Synchronous close, used by the worker isolate.
   void closeSync({bool flush = false}) {
-    if (flush) flushSync();
+    if (_closed) return;
+    _closed = true;
+    if (flush && !_readOnly) flushSync();
     _engine.closeSync();
   }
 }

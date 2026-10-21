@@ -11,7 +11,7 @@ import '../file.dart';
 /// throws a clear error instead of failing at an import.
 final class LocalStorageDirectory implements SyncStorageDirectory {
   /// Always throws [UnsupportedError].
-  LocalStorageDirectory(String path) {
+  LocalStorageDirectory(String path, {bool readOnly = false}) {
     throw UnsupportedError(
       'the local storage engine is not available in this build; '
       'use an object-store backend on the web',

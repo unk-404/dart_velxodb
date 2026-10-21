@@ -105,8 +105,8 @@ download. The full breakdown is in the benchmark below.
 - **Graceful shutdown.** `db.close(flush: true)` writes a segment so the next
   open reads the manifest instead of replaying the log.
 
-Not yet provided: backup/restore, web storage, the Mongo-style facade,
-storage-format migration, encryption, and geo/vector.
+Not yet provided: concurrent read-only readers, web storage, the Mongo-style
+facade, storage-format migration, encryption, and geo/vector.
 
 ### Concurrency contract
 
@@ -118,6 +118,14 @@ storage-format migration, encryption, and geo/vector.
   client isolates are queued and executed one at a time by the worker, so the
   single-writer contract holds while callers stay concurrent. Values cross the
   boundary as copies, so zero-copy reads apply inside the worker.
+- `VelxoDatabase.openSync(path, readOnly: true)` replays the WAL without
+  truncating it and rejects every write (`VelxoReadOnlyException`), including
+  catalog changes. A read-only open still takes the exclusive directory lock, so
+  one opener at a time; concurrent readers need shared locks or MVCC.
+- `db.backupSync(targetDirectory)` flushes first and copies a consistent file
+  set into an empty target; `copyDatabase(source, target)` restores it. Both work
+  at the storage-directory level, so the same code backs local and future
+  object-store targets. Backup is a full copy, not incremental.
 - Do not open the same path directly in the same process while a worker owns it:
   POSIX `fcntl` locks are process-wide, so a direct open in another isolate is
   not detected. Across processes the OS lock still applies. The worker client
@@ -136,6 +144,33 @@ storage-format migration, encryption, and geo/vector.
   writes stay in the memtable/WAL and shadow the new segment.
   `db.waitForMaintenance()` awaits it. On the web the segment is built inline
   because isolates are unavailable.
+
+### Known limitations (planned)
+
+These are real boundaries, not hidden behavior:
+
+1. **Same-process writer isolation across isolates.** The worker+rpc model works,
+   but a direct `VelxoDatabase.openSync` from another isolate in the same
+   process is not detected on POSIX. Planned: a process-wide writer registry
+   (lock directory with owner PID, or a `flock`-based lock) so every entry point
+   shares one guard.
+2. **Worker reads are serialized.** There is no MVCC; one slow query blocks
+   writes. Planned: read-only snapshots plus a shared-lock mode, then a
+   reader/writer split across isolates.
+3. **Values are copied across the isolate boundary.** Planned: batched RPC and
+   transferable result buffers for large scans; zero-copy stays inside the
+   worker.
+4. **The worker RPC surface is small.** It covers key/value CRUD, paging, flush,
+   check and maintenance. Planned: queries (indexed eq/range, full-text, graph)
+   and transactions over the protocol.
+5. **Flush uses a fresh `Isolate.run` per build.** Planned: a long-lived builder
+   worker reused across flushes.
+6. **Read-only readers are exclusive.** Planned: shared OS locks so many readers
+   can open one database.
+7. **Full-copy backup only.** Planned: incremental backup and backup of a live
+   database owned by another process.
+8. **Indexed range is slower than isar (1.6x).** Planned: optimize the posting
+   range path before claiming range parity.
 
 ## Status
 
@@ -156,6 +191,7 @@ Pre-alpha, usable end to end on the VM.
 | Deferred flush/compaction (single isolate) | done |
 | Background-isolate segment build | done |
 | Worker isolate + RPC facade (one writer, many clients) | done |
+| Read-only opens + full backup/restore | done |
 | Full-text and n-gram primitives | done |
 | Web (OPFS) sync engine, HTTP backends | planned |
 | Mongo-style client facade | planned |
@@ -381,13 +417,15 @@ Already shipped: VXS format, WAL + segments + mmap, query layer, secondary
 indexes, typed collections, references, graph, full-text, object-store engine,
 transactions, single-writer lock, durability tiers, auto-flush, auto-compaction,
 deferred maintenance, background-isolate segment builds, the worker-isolate RPC
-facade, integrity check, typed errors, and a deterministic crash-point matrix in
-CI (every byte of a torn transaction frame, segment-before-manifest, torn
-manifest fallback, pre-truncate replay, corrupt segment).
+facade, read-only opens, full backup/restore, integrity check, typed errors, and
+a deterministic crash-point matrix in CI (every byte of a torn transaction
+frame, segment-before-manifest, torn manifest fallback, pre-truncate replay,
+corrupt segment).
 
 Remaining, in order:
 
-1. **Backup / restore** and read-only opens.
+1. **Concurrent readers** — shared locks/MVCC so read-only handles do not take
+   the exclusive lock; then the process-wide writer guard listed above.
 2. **Index-range performance** — isar is currently 1.6x faster on the 12k-hit
    range benchmark; then the engine-level KV range cursor.
 3. **Web storage** (OPFS in a worker) instead of the current stub.

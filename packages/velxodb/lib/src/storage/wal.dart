@@ -293,7 +293,10 @@ final class Wal {
   /// Returns the offset of the first invalid byte (the new file length). Frames
   /// after a damaged one are discarded: a torn write means everything after it
   /// is untrustworthy.
-  int replaySync(void Function(Uint8List payload) apply) {
+  int replaySync(
+    void Function(Uint8List payload) apply, {
+    bool truncateTorn = true,
+  }) {
     final length = file.lengthSync;
     var offset = 0;
     var validEnd = 0;
@@ -308,7 +311,7 @@ final class Wal {
       offset += walHeaderSize + payloadLength;
       validEnd = offset;
     }
-    if (validEnd < length) {
+    if (truncateTorn && validEnd < length) {
       file.truncateSync(validEnd);
     }
     return validEnd;

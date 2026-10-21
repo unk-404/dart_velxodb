@@ -57,3 +57,9 @@ final class VelxoWorkerException extends VelxoException {
   /// Creates a worker error.
   const VelxoWorkerException(super.message);
 }
+
+/// A write was attempted on a read-only database.
+final class VelxoReadOnlyException extends VelxoException {
+  /// Creates a read-only error.
+  const VelxoReadOnlyException(super.message);
+}

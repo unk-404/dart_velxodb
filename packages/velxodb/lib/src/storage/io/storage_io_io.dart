@@ -16,8 +16,15 @@ final class LocalStorageDirectory implements SyncStorageDirectory {
   ///
   /// A second open of the same directory fails fast instead of letting two
   /// engines corrupt each other's WAL and segments.
-  LocalStorageDirectory(String path) : directory = Directory(path) {
-    directory.createSync(recursive: true);
+  LocalStorageDirectory(String path, {bool readOnly = false})
+    : directory = Directory(path) {
+    if (readOnly) {
+      if (!directory.existsSync()) {
+        throw VelxoNotFoundException('no database at: $path');
+      }
+    } else {
+      directory.createSync(recursive: true);
+    }
     final key = _canonicalKey(directory);
     if (!_openPaths.add(key)) {
       throw VelxoLockedException(

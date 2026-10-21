@@ -146,6 +146,16 @@
   isolate are queued and executed one at a time, preserving the single-writer
   contract while callers stay concurrent. Typed exceptions cross the boundary.
   The web build exports an unsupported stub.
+- Read-only opens: `VelxoDatabase.openSync(path, readOnly: true)` replays the
+  WAL without truncating, rejects engine writes and catalog changes with
+  `VelxoReadOnlyException`, and refuses to create a missing database or
+  collection. The exclusive directory lock is still taken, so one opener at a
+  time (shared readers are planned).
+- Backup/restore: `db.backupSync(targetDirectory)` flushes and copies a
+  consistent file set (skipping LOCK) into an empty target;
+  `copyDatabase(source, target)` restores it. Both work on storage directories,
+  so the same code fits local and future object-store targets. Full copy only,
+  not incremental.
 - Single-writer lock now also works on POSIX: an in-process registry of
   canonical paths complements the OS lock, which is process-wide there, so a
   second open inside the same process is rejected on Linux and macOS too.

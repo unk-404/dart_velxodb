@@ -64,12 +64,21 @@ final class StorageEngine {
     this.compactionThreshold = 4,
     this.maintenanceScheduler,
     this.backgroundSegmentBuilder,
+    bool readOnly = false,
   }) : _directory = directory,
        _arenaChunkSize = arenaChunkSize,
-       _walFile = directory.openSync(walFileName),
+       readOnly = readOnly,
+       _walFile = readOnly
+           ? (directory.existsSync(walFileName)
+                 ? directory.openSync(walFileName, create: false)
+                 : MemoryStorageFile())
+           : directory.openSync(walFileName),
        _arena = DocArena(chunkSize: arenaChunkSize) {
     _wal = Wal(_walFile);
   }
+
+  /// Whether writes are rejected and the WAL is never modified.
+  final bool readOnly;
 
   /// Name of the write-ahead log file.
   static const String walFileName = 'wal.log';
@@ -169,8 +178,7 @@ final class StorageEngine {
 
   /// Loads the manifest and replays the WAL. Call once before serving reads.
   void openSync() {
-    final store = ManifestStore(_directory);
-    final manifest = store.loadSync();
+    final store = ManifestStore(_directory);    final manifest = store.loadSync();
     if (manifest != null) {
       _manifest = manifest;
       for (final info in manifest.segments) {
@@ -206,7 +214,7 @@ final class StorageEngine {
           _memtable.putTombstone(key);
         }
       });
-    });
+    }, truncateTorn: !readOnly);
   }
 
   /// Async facade over [openSync].
@@ -216,6 +224,7 @@ final class StorageEngine {
   ///
   /// Inside a transaction the write is buffered and applied at commit.
   void putSync(Uint8List key, Bytes document) {
+    _checkWritable();
     _checkOpen();
     final bytes = document.asUint8List();
     if (_txOps != null) {
@@ -252,6 +261,7 @@ final class StorageEngine {
   ///
   /// Inside a transaction the delete is buffered and applied at commit.
   void deleteSync(Uint8List key) {
+    _checkWritable();
     _checkOpen();
     if (_txOps != null) {
       _record(WalOp.delete(key));
@@ -279,6 +289,7 @@ final class StorageEngine {
   /// uncommitted writes (point reads do). This is a deliberate, documented
   /// single-process model, not MVCC.
   T transactionSync<T>(T Function() body) {
+    _checkWritable();
     _checkOpen();
     if (_txOps != null) {
       throw const VelxoConflictException(
@@ -308,6 +319,7 @@ final class StorageEngine {
   /// A crash either keeps the whole batch or none of it, which is what lets a
   /// document and its derived entries (index, reverse reference) land together.
   void applyBatchSync(List<WalOp> ops) {
+    _checkWritable();
     _checkOpen();
     if (ops.isEmpty) return;
     if (_txOps != null) {
@@ -367,6 +379,7 @@ final class StorageEngine {
   ///
   /// Does nothing when the memtable is empty. Returns the new segment info.
   SegmentInfo? flushSync() {
+    _checkWritable();
     _checkOpen();
     if (_memtable.length == 0) return null;
 
@@ -514,6 +527,7 @@ final class StorageEngine {
   /// can be dropped entirely — after the merge no older copy of a deleted key
   /// remains. Returns `false` when there was nothing to do.
   bool compactSync() {
+    _checkWritable();
     _checkOpen();
     if (_segments.length < 2) return false;
 
@@ -554,6 +568,7 @@ final class StorageEngine {
 
   /// Makes everything appended so far durable.
   void syncNow() {
+    _checkWritable();
     _checkOpen();
     _walFile.flushSync();
   }
@@ -568,7 +583,7 @@ final class StorageEngine {
   void closeSync() {
     if (_closed) return;
     _closed = true;
-    _walFile.flushSync();
+    if (!readOnly) _walFile.flushSync();
     _walFile.closeSync();
     for (final mapped in _segmentMaps) {
       mapped.closeSync();
@@ -744,5 +759,12 @@ final class StorageEngine {
 
   void _checkOpen() {
     if (_closed) throw const VelxoClosedException('engine is closed');
+  }
+
+  void _checkWritable() {
+    _checkOpen();
+    if (readOnly) {
+      throw const VelxoReadOnlyException('database is read-only');
+    }
   }
 }

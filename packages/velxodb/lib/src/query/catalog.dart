@@ -468,10 +468,13 @@ final class Catalog {
 /// Persists the catalog atomically (write temp, then rename).
 final class CatalogStore {
   /// Creates a store over [directory].
-  CatalogStore(this.directory);
+  CatalogStore(this.directory, {this.readOnly = false});
 
   /// Directory holding the catalog.
   final SyncStorageDirectory directory;
+
+  /// Rejects writes when the database was opened read-only.
+  final bool readOnly;
 
   static const String _tempName = 'CATALOG.tmp';
 
@@ -494,6 +497,9 @@ final class CatalogStore {
 
   /// Writes [catalog] atomically.
   void saveSync(Catalog catalog) {
+    if (readOnly) {
+      throw const VelxoReadOnlyException('database is read-only');
+    }
     final temp = directory.openSync(_tempName);
     try {
       temp.writeAllSync(catalog.encode());
