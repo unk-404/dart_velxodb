@@ -4,6 +4,7 @@ import 'package:blit/blit.dart';
 
 import '../errors.dart';
 import 'arena.dart';
+import 'background_segment.dart';
 import 'check.dart';
 import 'directory.dart';
 import 'file.dart';
@@ -62,6 +63,7 @@ final class StorageEngine {
     this.autoCompact = true,
     this.compactionThreshold = 4,
     this.maintenanceScheduler,
+    this.backgroundSegmentBuilder,
   }) : _directory = directory,
        _arenaChunkSize = arenaChunkSize,
        _walFile = directory.openSync(walFileName),
@@ -129,10 +131,23 @@ final class StorageEngine {
   /// on this isolate, but after the triggering write returns.
   final MaintenanceScheduler? maintenanceScheduler;
 
-  bool _maintenanceScheduled = false;
+  /// Builds segments off the engine isolate.
+  ///
+  /// When set, a threshold crossing encodes the memtable, hands the batch to
+  /// this function (the default implementation uses `Isolate.run`), and commits
+  /// the returned segment when it arrives. Writes continue in the meantime.
+  final SegmentBuildFunction? backgroundSegmentBuilder;
 
-  /// Whether deferred maintenance is scheduled but has not run yet.
-  bool get maintenanceScheduled => _maintenanceScheduled;
+  bool _maintenanceScheduled = false;
+  bool _backgroundBusy = false;
+  int _memtableEpoch = 0;
+  int _lastBackgroundWalEnd = 0;
+  Future<void>? _backgroundFuture;
+  Object? _backgroundError;
+  StackTrace? _backgroundStack;
+
+  /// Whether deferred maintenance is pending.
+  bool get maintenanceScheduled => _maintenanceScheduled || _backgroundBusy;
 
   /// The memtable, exposed for flushing and tests.
   MemTable get memtable => _memtable;
@@ -363,38 +378,124 @@ final class StorageEngine {
         builder.add(key, _arena.view(chunk, offset, length));
       }
     });
-    final bytes = builder.finish();
-
-    final name = _segmentName(_nextSegmentId++);
-    _writeFile(name, bytes.asUint8List());
-
-    final info = SegmentInfo(
-      name: name,
-      entryCount: builder.docCount,
-      byteLength: bytes.length,
-    );
-    _manifest = ManifestStore(_directory).saveSync(<SegmentInfo>[
-      ..._segmentInfos,
-      info,
-    ]);
-
-    _segments.add(SegmentReader(bytes.asUint8List()));
-    _segmentInfos.add(info);
+    final info = _writeSegment(builder.finish().asUint8List(), builder.docCount);
 
     // Commit point passed: the WAL is no longer needed.
     _walFile.truncateSync(0);
     _walFile.flushSync();
     _memtable.clear();
     _arena = DocArena(chunkSize: _arenaChunkSize);
+    _memtableEpoch++;
+    _lastBackgroundWalEnd = 0;
 
     // Bounded segment count: compaction runs on the write that crosses the
     // threshold. This costs latency on that one write and keeps reads from
     // degrading silently.
-    if (autoCompact && _segments.length >= compactionThreshold) {
-      compactSync();
+    if (_maybeAutoCompact()) {
       return _segmentInfos.isEmpty ? info : _segmentInfos.last;
     }
     return info;
+  }
+
+  SegmentInfo _writeSegment(Uint8List bytes, int entryCount) {
+    final name = _segmentName(_nextSegmentId++);
+    _writeFile(name, bytes);
+    final info = SegmentInfo(
+      name: name,
+      entryCount: entryCount,
+      byteLength: bytes.length,
+    );
+    _manifest = ManifestStore(_directory).saveSync(<SegmentInfo>[
+      ..._segmentInfos,
+      info,
+    ]);
+    _segments.add(SegmentReader(bytes));
+    _segmentInfos.add(info);
+    return info;
+  }
+
+  bool _maybeAutoCompact() {
+    if (!autoCompact || _segments.length < compactionThreshold) return false;
+    compactSync();
+    return true;
+  }
+
+  /// Encodes the current memtable as a WAL batch for a background build.
+  Uint8List _encodeMemtable() {
+    final ops = <WalOp>[];
+    _memtable.forEachSorted((key, chunk, offset, length) {
+      if (length < 0) {
+        ops.add(WalOp.delete(key));
+      } else {
+        ops.add(WalOp.put(key, _arena.view(chunk, offset, length).asUint8List()));
+      }
+    });
+    return WalBatch.encode(ops);
+  }
+
+  void _startBackgroundFlush(SegmentBuildFunction builder, int walEnd) {
+    _backgroundBusy = true;
+    _backgroundError = null;
+    final epoch = _memtableEpoch;
+    final entryCount = _memtable.length;
+    final batch = _encodeMemtable();
+    _backgroundFuture = () async {
+      try {
+        final bytes = await builder(batch, blockTargetSize);
+        _commitBackgroundSegment(bytes, entryCount, epoch, walEnd);
+      } on Object catch (error, stack) {
+        _backgroundError = error;
+        _backgroundStack = stack;
+        _lastBackgroundWalEnd = walEnd;
+      } finally {
+        _backgroundBusy = false;
+        _backgroundFuture = null;
+      }
+    }();
+  }
+
+  void _commitBackgroundSegment(
+    Uint8List bytes,
+    int entryCount,
+    int epoch,
+    int walEnd,
+  ) {
+    if (_closed || epoch != _memtableEpoch) return;
+    _writeSegment(bytes, entryCount);
+
+    if (_walFile.lengthSync == walEnd) {
+      // No write landed between the snapshot and the commit: the segment
+      // covers the whole log, so the memtable and WAL can be reset.
+      _walFile.truncateSync(0);
+      _walFile.flushSync();
+      _memtable.clear();
+      _arena = DocArena(chunkSize: _arenaChunkSize);
+      _memtableEpoch++;
+      _lastBackgroundWalEnd = 0;
+    } else {
+      // Newer writes stay in the memtable (and WAL); they shadow the segment.
+      _lastBackgroundWalEnd = walEnd;
+    }
+    _maybeAutoCompact();
+  }
+
+  /// Waits for any in-flight background segment build.
+  ///
+  /// Rethrows a build error, if one was recorded.
+  Future<void> waitForMaintenance() async {
+    while (_backgroundFuture != null || _maintenanceScheduled) {
+      final future = _backgroundFuture;
+      if (future != null) {
+        await future;
+      } else {
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
+    final error = _backgroundError;
+    if (error != null) {
+      _backgroundError = null;
+      Error.throwWithStackTrace(error, _backgroundStack!);
+    }
   }
 
   /// Async facade over [flushSync].
@@ -582,10 +683,26 @@ final class StorageEngine {
   void _afterWrite() {
     if (durability == Durability.always) _walFile.flushSync();
     if (!autoFlush || !shouldFlush) return;
+    if (memoryBytes > maxMemtableBytes * 4) {
+      // Bound memory even if the background builder is busy.
+      flushSync();
+      return;
+    }
+    final background = backgroundSegmentBuilder;
+    if (background != null) {
+      if (_backgroundBusy) return;
+      final walEnd = _walFile.lengthSync;
+      // Do not snapshot the same memtable twice; wait for at least one more
+      // threshold of WAL growth.
+      if (_lastBackgroundWalEnd != 0 &&
+          walEnd - _lastBackgroundWalEnd < maxMemtableBytes) {
+        return;
+      }
+      _startBackgroundFlush(background, walEnd);
+      return;
+    }
     final scheduler = maintenanceScheduler;
-    // A long synchronous write loop never yields, so a deferred flush must not
-    // let memory grow without bound. Past 4x the threshold, flush inline.
-    if (scheduler == null || memoryBytes > maxMemtableBytes * 4) {
+    if (scheduler == null) {
       flushSync();
       return;
     }

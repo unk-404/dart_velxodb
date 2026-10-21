@@ -15,6 +15,7 @@ library;
 
 export 'src/errors.dart';
 export 'src/storage/arena.dart';
+export 'src/storage/background_segment.dart';
 export 'src/storage/block.dart';
 export 'src/storage/bloom.dart';
 export 'src/storage/check.dart';

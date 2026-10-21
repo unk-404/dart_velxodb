@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import '../serde/schema.dart';
 import '../serde/view.dart';
+import '../storage/background_segment.dart';
 import '../storage/check.dart';
 import '../storage/directory.dart';
 import '../storage/engine.dart';
@@ -33,7 +34,8 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
   /// flush. [durability] defaults to [Durability.batched]; pass
   /// [Durability.always] when a committed write must survive a power cut.
   /// With [deferredMaintenance], the flush/compaction that crosses a threshold
-  /// runs after the triggering write returns instead of inline.
+  /// runs after the triggering write returns instead of inline. With
+  /// [backgroundFlush], the segment itself is built on a background isolate.
   static VelxoDatabase openSync(
     String path, {
     bool autoFlush = true,
@@ -42,6 +44,7 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
     bool autoCompact = true,
     int compactionThreshold = 4,
     bool deferredMaintenance = false,
+    bool backgroundFlush = false,
   }) {
     final directory = LocalStorageDirectory(path);
     StorageEngine? engine;
@@ -56,6 +59,9 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
         maxMemtableBytes: maxMemtableBytes,
         maintenanceScheduler: deferredMaintenance
             ? const MicrotaskMaintenanceScheduler()
+            : null,
+        backgroundSegmentBuilder: backgroundFlush
+            ? buildSegmentInBackground
             : null,
       );
       engine.openSync();
@@ -230,6 +236,9 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
 
   /// Async facade over [syncNow].
   Future<void> sync() async => syncNow();
+
+  /// Waits for any in-flight background segment build.
+  Future<void> waitForMaintenance() => _engine.waitForMaintenance();
 
   @override
   List<String> relationNames() =>

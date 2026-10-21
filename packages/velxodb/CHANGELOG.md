@@ -134,6 +134,12 @@
   a `MaintenanceScheduler` (microtask today, worker isolate later). Memory may
   overshoot the threshold briefly; past 4x it flushes inline. WAL replay keeps
   pending writes safe across close or crash.
+- Background flush: `VelxoDatabase.openSync(backgroundFlush: true)` builds the
+  segment on a background isolate (`Isolate.run`, snapshot transferred via
+  `TransferableTypedData`). Writes continue during the build; the memtable and
+  WAL reset only when no write landed after the snapshot, otherwise newer writes
+  shadow the committed segment. `waitForMaintenance()` awaits the build. The
+  web build falls back to an inline build.
 - Single-writer lock now also works on POSIX: an in-process registry of
   canonical paths complements the OS lock, which is process-wide there, so a
   second open inside the same process is rejected on Linux and macOS too.

@@ -119,8 +119,15 @@ Mongo-style facade, storage-format migration, encryption, and geo/vector.
   flushes inline so a synchronous write loop cannot grow without bound.
 - The WAL keeps every write safe while maintenance is pending, so closing or
   crashing before it runs recovers normally.
-- `MaintenanceScheduler` is the seam for the real worker isolate: the engine
-  does not change when a background isolate implements it.
+- `VelxoDatabase.openSync(backgroundFlush: true)` builds the segment itself on a
+  background isolate (`Isolate.run`, with the snapshot batch transferred). The
+  write that crosses the threshold only encodes the memtable; if no writes
+  landed during the build, the memtable and WAL are reset, otherwise the newer
+  writes stay in the memtable/WAL and shadow the new segment.
+  `db.waitForMaintenance()` awaits it. On the web the segment is built inline
+  because isolates are unavailable.
+- `MaintenanceScheduler` and the segment-builder function are the seams for a
+  persistent worker isolate; the engine does not change.
 
 ## Status
 
@@ -139,6 +146,7 @@ Pre-alpha, usable end to end on the VM.
 | Object-store backend (async, same segment format) | done |
 | Crash-point matrix (deterministic, in CI) | done |
 | Deferred flush/compaction (single isolate) | done |
+| Background-isolate segment build | done |
 | Full-text and n-gram primitives | done |
 | Web (OPFS) sync engine, HTTP backends | planned |
 | Mongo-style client facade | planned |
@@ -370,9 +378,9 @@ segment).
 
 Remaining, in order:
 
-1. **Worker isolate** — implement `MaintenanceScheduler` on a background isolate
-   (segment building off the main isolate) and then a shared-nothing RPC facade
-   for one writer / many readers across isolates.
+1. **Worker isolate** — segment building now runs on a background isolate; the
+   next step is a persistent worker plus a shared-nothing RPC facade for one
+   writer / many readers across isolates.
 2. **Backup / restore** and read-only opens.
 3. **Index-range performance** — isar is currently 1.6x faster on the 12k-hit
    range benchmark; then the engine-level KV range cursor.
