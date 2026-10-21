@@ -169,6 +169,11 @@
   applies them in reverse, so the downgrade path is an in-place reverse diff,
   not a copy of the database. An interrupted upgrade is refused on open and
   reverted with `VelxoDatabase.rollbackUpgradeSync(path)`.
+- Web/OPFS foundation: `OpfsObjectStore` implements the async `ObjectStore`
+  over blit's chunked OPFS `BytesFile`, with an append-only crash-safe key index
+  (intent before object, torn tail ignored). The existing `ObjectStoreEngine`
+  runs on top of it with the same segment/manifest bytes as the VM. Chrome tests
+  cover put/get/list/delete, a 300 KiB object, and an engine write/flush/reopen.
 - Single-writer lock now also works on POSIX: an in-process registry of
   canonical paths complements the OS lock, which is process-wide there, so a
   second open inside the same process is rejected on Linux and macOS too.

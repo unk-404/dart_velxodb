@@ -105,8 +105,8 @@ download. The full breakdown is in the benchmark below.
 - **Graceful shutdown.** `db.close(flush: true)` writes a segment so the next
   open reads the manifest instead of replaying the log.
 
-Not yet provided: web storage, the Mongo-style facade, storage-format
-migration, encryption, and geo/vector.
+Not yet provided: the Web database/query facade, the Mongo-style facade,
+storage-format migration, encryption, and geo/vector.
 
 ### Concurrency contract
 
@@ -193,7 +193,7 @@ Pre-alpha, usable end to end on the VM.
 | Read-only opens + shared reader locks | done |
 | Full backup/restore | done |
 | Full-text and n-gram primitives | done |
-| Web (OPFS) sync engine, HTTP backends | planned |
+| Web (OPFS) sync engine, HTTP backends | OPFS store done (async); facade in progress |
 | Mongo-style client facade | planned |
 | Vector / geo field types | planned |
 
@@ -219,6 +219,26 @@ db.transactionSync(() {
 await db.close(flush: true); // graceful shutdown: reopen reads the manifest,
                              // not a full WAL replay
 ```
+
+### Web (async)
+
+Browsers cannot run the synchronous local engine. The Web stack uses blit's
+chunked OPFS backend and the existing async object-store engine, with the same
+segment/manifest bytes as the VM:
+
+```dart
+final store = await OpfsObjectStore.open(root: 'chat');
+final engine = ObjectStoreEngine(store: store);
+await engine.open();
+await engine.put(key, encodedDocument);
+final document = await engine.get(key);
+await engine.close();
+```
+
+The OPFS store keeps a crash-safe append-only key index so `list` works without
+walking OPFS; each object is a blit logical file (chunked, sparse, worker pool).
+The async database/query facade is the next step; the adapter and
+`ObjectStoreEngine` are Chrome-tested end to end, including a reopen.
 
 ### Queries
 
@@ -457,7 +477,8 @@ Remaining, in order:
 2. **Index-range performance** — isar is still about 1.25x faster on the
    12k-hit range benchmark; close it with a covering index or cheaper document
    fetch, then add the engine-level KV range cursor.
-3. **Web storage** (OPFS in a worker) instead of the current stub.
+3. **Web query facade** over the async object-store engine; the OPFS store and
+   engine are done and Chrome-tested, the database/collection API is next.
 4. **Mongo-style facade** over the existing query layer.
 5. **Docs site and runnable examples**, plus long-running stress/fuzz jobs.
 
