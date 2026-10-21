@@ -13,7 +13,11 @@ export 'src/query/collection.dart' show Collection;
 export 'src/query/cursor.dart' show CollectionCursor;
 export 'src/query/database.dart';
 export 'src/query/index.dart' show IndexCatalog, IndexDefinition;
-export 'src/query/types.dart' show ScanEntry;
+export 'src/query/plan.dart'
+    show Predicate, Query, QueryPlan, ScanStrategy;
+export 'src/query/schema.dart'
+    show DocumentSchema, Field, TypedCollection;
+export 'src/query/types.dart' show ScanEntry, ScanPage;
 export 'src/query/velxo.dart';
 
 /// Semantic version of the package.

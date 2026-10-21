@@ -59,4 +59,12 @@
   non-transactional crashes.
 - Index range scans (`lookupByIndexRangeSync`) and key-cursor pagination
   (`pageSync` with `after`/`next`) that does not drift when data changes.
+- Query planner: a `Predicate` AST (`eq/lt/lte/gt/gte/between/and/or/not`),
+  plans that pick an index for an indexable `and` branch and fall back to a scan
+  otherwise, with a residual filter so results never depend on the plan.
+  `collection.explainSync` reports the choice.
+- Typed models: `DocumentSchema<T>` / `TypedCollection<T>` and a dependency-free
+  generator (`package:velxodb/generator.dart`) that turns a `ModelSpec` into a
+  model class, its schema and a typed collection opener. Generated code is
+  committed as a fixture and compiled by the test suite.
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).

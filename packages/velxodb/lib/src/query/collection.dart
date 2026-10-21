@@ -8,6 +8,7 @@ import '../serde/view.dart';
 import '../storage/engine.dart';
 import 'cursor.dart';
 import 'index.dart';
+import 'plan.dart';
 import 'types.dart';
 
 /// A named namespace of documents inside a database.
@@ -202,8 +203,53 @@ final class Collection {
     return out;
   }
 
-  /// Returns one page of entries plus the key to resume after.
+  /// Runs [query], using an index when one covers part of the predicate.
   ///
+  /// Key-range fields of the query are ignored on an index plan; the residual
+  /// predicate still runs, so results are identical either way.
+  List<ScanEntry> findSync(Query query) {
+    final hit = indexHitFor(query, _indexes.keys);
+    if (hit == null) {
+      return scanSync(
+        prefix: query.prefix,
+        start: query.start,
+        end: query.end,
+        includeStart: query.includeStart,
+        includeEnd: query.includeEnd,
+        where: query.where?.test,
+        limit: query.limit,
+      );
+    }
+    final limit = query.limit;
+    final candidates = hit.isEquality
+        ? lookupByIndexSync(hit.fieldId, hit.value!)
+        : lookupByIndexRangeSync(
+            hit.fieldId,
+            from: hit.from,
+            to: hit.to,
+            includeFrom: hit.includeFrom,
+            includeTo: hit.includeTo,
+            limit: limit,
+          );
+    final predicate = query.where;
+    if (predicate == null) return candidates;
+    final out = <ScanEntry>[];
+    for (final entry in candidates) {
+      if (!predicate.test(DocView.parse(entry.value.asUint8List()))) continue;
+      out.add(entry);
+      if (limit != null && out.length >= limit) break;
+    }
+    return out;
+  }
+
+  /// Async facade over [findSync].
+  Future<List<ScanEntry>> find(Query query) async => findSync(query);
+
+  /// Describes how [query] would be executed.
+  String explainSync(Query query) =>
+      planQuery(query, _indexes.keys).explanation;
+
+  /// Returns one page of entries plus the key to resume after.
   /// Keys are the collection's own ordering, so a page token is simply the last
   /// key of the previous page; no offset arithmetic and no drift on writes.
   ScanPage pageSync({
