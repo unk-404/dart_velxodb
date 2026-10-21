@@ -6,12 +6,13 @@ does not satisfy its section must not be published.
 
 ## Terms
 
-- **Direct read**: interpreting on-disk bytes without VelxoDB's compatibility
-  layer, for example an external tool or a VelxoDB build from another major.
-- **Format version**: the `(major, minor)` pair in the `FORMAT` stamp at the
-  database root. It is independent from a document's schema version.
-- **Interop**: opening a database with VelxoDB itself and getting the same
-  logical data, with no user action.
+- **Direct read**: interpreting on-disk bytes with a reader built for one exact
+  `A.B.C` release, without VelxoDB's compatibility layer or any implicit
+  conversion. A direct reader is not promised to work on another `A.B.*` or
+  another A at all.
+- **API interop**: opening a database through VelxoDB's own API, where the
+  release's compatibility layer may translate or ignore on-disk differences and
+  the logical data is identical.
 
 ## Rules by position
 
@@ -19,17 +20,20 @@ does not satisfy its section must not be published.
 
 - On-disk format is **byte-identical**. No new fields, files, encodings or
   default changes.
-- API is **unchanged**: no additions, removals, deprecations or behavior
-  changes. Documentation and bug fixes only.
+- The export API is **unchanged**: no additions, removals or deprecations. The
+  documented behavior of every exported symbol is unchanged.
+- Internal logic changes, bug fixes and performance optimizations are allowed,
+  as long as no exported API behavior changes.
 - No migration code, explicit or implicit, may be added for a C release.
 - A database written by any `A.B.C` opens in any other `A.B.C` with no action.
 
 ### B — minor (e.g. 1.4.3 → 1.5.0)
 
-- The on-disk format may change. A **direct read** by a previous B is not
-  guaranteed: new bytes may need a new reader.
-- Interop is still absolute **inside the same A**: every `A.x.y` opens every
-  `A.*` database with no user action.
+- The on-disk format may change. A **direct reader for one exact `A.B.C`** is
+  not guaranteed to work on a different `A.B.*` version; new bytes may need the
+  matching reader.
+- API interop is still absolute **inside the same A**: every `A.x.y` opens every
+  `A.*` database through VelxoDB with no user action.
   - Newer VelxoDB implicitly upgrades old data when it opens it (in memory, and
     on the next write for the durable form).
   - Older VelxoDB in the same A must ignore unknown fields/sections. A B
@@ -43,15 +47,23 @@ does not satisfy its section must not be published.
 ### A — major (e.g. 1.9.0 → 2.0.0)
 
 - The on-disk format and/or the API may be incompatible in any way.
-- **Direct read by the previous A is not guaranteed.** Opening an old database
+- **Direct read by a previous A is not guaranteed.** Opening an old database
   with the new A requires an explicit upgrade command/API. Opening a new
   database with an old A is not supported.
 - Upgrade requirements:
-  - `VelxoDatabase.upgradeSync(path)` (or CLI) is the only path. It must write
-    a full backup before touching data, validate the result, and switch
-    atomically.
-  - A downgrade path is mandatory: the pre-upgrade backup restored with the
-    previous A, or an explicit downgrade tool if one is provided.
+  - `VelxoDatabase.upgradeSync(path)` (or CLI) is the only path. It must create
+    an **in-place undo journal** before touching data, validate the result, and
+    switch atomically.
+  - The undo journal is not a copy of the database. Each mutation records the
+    original byte range it replaces, plus the full content of files it deletes
+    and the names of files it creates. Entries are flushed before the mutation.
+    `VelxoDatabase.rollbackUpgradeSync(path)` applies them in reverse and
+    restores the exact pre-upgrade bytes.
+  - A downgrade path is therefore built in: roll back with the journal, then
+    open with the previous A. The journal may be discarded once the upgrade is
+    accepted.
+  - An interrupted upgrade leaves the journal in place; opening fails with
+    `VelxoUpgradeRequiredException` until it is rolled back or retried.
   - Opening without upgrading fails with `VelxoUpgradeRequiredException`;
     opening a database from a newer A fails with `VelxoIncompatibleException`.
 - API may change freely. Every breaking change must be documented in the
@@ -84,6 +96,9 @@ offset 8..11  CRC-32C of bytes 0..7, little endian u32
   explicit migration for that major is registered and `upgradeSync` runs.
 - Same `major`, any `minor`: open normally. A writable open upgrades an older
   minor stamp to the current minor; a newer minor stamp is left untouched.
+- An `UPGRADE-JOURNAL` in the root means a major upgrade did not finish. Opening
+  raises `VelxoUpgradeRequiredException` until
+  `VelxoDatabase.rollbackUpgradeSync(path)` restores the original bytes.
 
 ## Release procedure
 

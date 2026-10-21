@@ -9,6 +9,7 @@ import '../storage/check.dart';import '../storage/directory.dart';
 import '../storage/engine.dart';
 import '../storage/io/storage_io.dart';
 import '../storage/maintenance.dart';
+import '../upgrade_journal.dart';
 import '../version.dart';
 import 'catalog.dart';
 import 'collection.dart';
@@ -105,6 +106,11 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
   static void upgradeSync(String path) {
     final directory = LocalStorageDirectory(path);
     try {
+      if (directory.existsSync(upgradeJournalFileName)) {
+        throw const VelxoUpgradeRequiredException(
+          'an upgrade journal is present; roll it back first',
+        );
+      }
       final stamp = readFormatStamp(directory);
       if (stamp == null) {
         writeFormatStamp(directory);
@@ -122,6 +128,20 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
         );
       }
       if (stamp.minor < formatMinor) writeFormatStamp(directory);
+    } finally {
+      directory.closeSync();
+    }
+  }
+
+  /// Reverts an interrupted major upgrade using its in-place undo journal.
+  ///
+  /// The journal records the original byte ranges before the upgrade touched
+  /// them; applying it in reverse restores the exact pre-upgrade files. It is
+  /// a no-op when no journal exists.
+  static void rollbackUpgradeSync(String path) {
+    final directory = LocalStorageDirectory(path);
+    try {
+      UpgradeJournal(directory).rollback();
     } finally {
       directory.closeSync();
     }

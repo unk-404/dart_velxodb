@@ -4,6 +4,7 @@ import 'errors.dart';
 import 'serde/crc32c.dart';
 import 'serde/vxs.dart';
 import 'storage/directory.dart';
+import 'upgrade_journal.dart';
 
 /// On-disk format major version.
 ///
@@ -71,6 +72,12 @@ void checkFormatCompatibility(
   SyncStorageDirectory directory, {
   required bool readOnly,
 }) {
+  if (directory.existsSync(upgradeJournalFileName)) {
+    throw const VelxoUpgradeRequiredException(
+      'an upgrade journal is present: the upgrade did not finish. Run '
+      'VelxoDatabase.rollbackUpgradeSync(path)',
+    );
+  }
   final stamp = readFormatStamp(directory);
   if (stamp == null) {
     if (!readOnly) writeFormatStamp(directory);

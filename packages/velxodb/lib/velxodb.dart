@@ -35,6 +35,7 @@ export 'src/query/schema.dart'
     show DocumentSchema, Field, TypedCollection;
 export 'src/query/types.dart' show ScanEntry, ScanPage;
 export 'src/query/velxo.dart';
+export 'src/upgrade_journal.dart';
 export 'src/version.dart';
 export 'src/worker/worker_client.dart';
 

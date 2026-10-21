@@ -118,4 +118,28 @@ void main() {
       throwsA(isA<VelxoCorruptException>()),
     );
   });
+
+  test('an interrupted upgrade is refused and can roll back', () async {
+    final db = VelxoDatabase.openSync(path);
+    await db.close();
+
+    final directory = LocalStorageDirectory(path);
+    final journal = UpgradeJournal(directory)..begin();
+    journal.recordCreate('ghost.bin');
+    directory.openSync('ghost.bin').closeSync();
+    directory.closeSync();
+
+    await expectLater(
+      () => VelxoDatabase.openSync(path),
+      throwsA(isA<VelxoUpgradeRequiredException>()),
+    );
+
+    VelxoDatabase.rollbackUpgradeSync(path);
+    final reopened = VelxoDatabase.openSync(path);
+    await reopened.close();
+    expect(
+      File('$path${Platform.pathSeparator}ghost.bin').existsSync(),
+      isFalse,
+    );
+  });
 }

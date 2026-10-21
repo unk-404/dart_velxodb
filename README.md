@@ -416,18 +416,26 @@ reopen                            0ms          2 (1/0/0/1)      0.0MB      0.0MB
 VelxoDB uses `A.B.C`. The normative policy is [VERSIONING.md](VERSIONING.md);
 the short version:
 
-- **C (patch)**: byte-identical format, unchanged API, no migration logic.
-- **B (minor)**: format may change; VelxoDB itself transparently upgrades or
-  ignores the difference, so every release inside the same A opens every
-  database without user action. API changes are additive; removals require an
-  explicit deprecation and happen only in the next A.
+- **C (patch)**: byte-identical format, unchanged export API and documented
+  behavior, no migration logic. Internal logic, bug fixes and performance
+  optimizations are allowed.
+- **B (minor)**: format may change; a direct reader built for one exact `A.B.C`
+  is not promised to read another `A.B.*`, but VelxoDB's own API transparently
+  upgrades or ignores the difference, so every release inside the same A opens
+  every database without user action. API changes are additive; removals
+  require an explicit deprecation and happen only in the next A.
 - **A (major)**: format and/or API may break. Upgrading requires
-  `VelxoDatabase.upgradeSync(path)` with a backup and a documented downgrade
-  path; opening without upgrading raises `VelxoUpgradeRequiredException`, and
-  opening a newer major raises `VelxoIncompatibleException`.
+  `VelxoDatabase.upgradeSync(path)`, which records an **in-place undo journal**
+  (original byte ranges, not a copy of the database) before touching data.
+  `VelxoDatabase.rollbackUpgradeSync(path)` applies it in reverse for the
+  downgrade path. Opening without upgrading raises
+  `VelxoUpgradeRequiredException`; opening a newer major raises
+  `VelxoIncompatibleException`.
 
 Each database carries a `FORMAT` stamp (`major`, `minor`, CRC-32C). A database
-without one is treated as `1.0` and stamped on the next writable open.
+without one is treated as `1.0` and stamped on the next writable open. An
+unfinished major upgrade leaves `UPGRADE-JOURNAL` behind; opening refuses until
+it is rolled back.
 
 ## Roadmap
 
