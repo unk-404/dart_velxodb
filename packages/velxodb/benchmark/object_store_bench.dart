@@ -1,11 +1,11 @@
-// S3-style object-store benchmark with request/byte accounting.
+// Object-store benchmark with request/byte accounting.
 //
-//   dart run benchmark/s3_bench.dart
-//   dart compile exe benchmark/s3_bench.dart -o .agents/spikes/s3_bench.exe
+//   dart run benchmark/object_store_bench.dart
 //
 // No network: SimulatedObjectStore counts every request and byte, so the numbers
-// describe the engine's request shape (what an S3 bill would be based on) and
-// the local CPU cost.
+// describe the engine's request shape and the local CPU cost. The engine itself
+// is backend-agnostic; any store implementing get/put/delete/list can host the
+// same segments.
 import 'dart:typed_data';
 
 import 'package:blit/blit.dart';

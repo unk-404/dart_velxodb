@@ -1,30 +1,85 @@
 # velxodb
 
-An embedded, pure-Dart document database built for very large local datasets and
-for object storage (S3-style) as a first-class backend.
+An embedded, pure-Dart document database.
 
-- **Pure Dart** — no FFI, no native extensions. The storage format layers compile
-  to JS/Wasm; the local engine is VM-only by design.
-- **Zero-copy binary format (VXS)** — self-describing documents with field-level
-  random access. Reading a field does not deserialize the document or allocate a
-  map.
-- **LSM-style storage** — WAL → memtable → immutable segments. Point reads use a
-  bloom filter plus a binary search; the memtable keeps a hash index for lookups
-  and a skip list for ordered range scans.
-- **Query layer** — collections, streaming cursors, key ranges, pagination,
-  secondary indexes, a small query planner, schema versions and migrations,
-  reference bindings with delete policies, and typed graph edges.
-- **Object-store mode** — a generic `ObjectStore` SPI. Segments and the manifest
-  are objects, WAL batches are objects, reads fetch segments lazily through an
-  LRU cache. A simulated store in the repo makes the S3 cost model measurable
-  (requests/bytes in both directions) without a network.
-- **Generated codecs** — a separate dev-time generator turns a `ModelSpec` into
-  plain Dart (const field ids, static `encodeInto`/`decodeFrom`, index and
-  reference setup). No reflection, no schema objects on the hot path.
+It is built local-first: the default backend is a memory-mapped, log-structured
+engine that answers point reads from RAM and range scans without copying
+documents. The same immutable segments can also be served from object storage,
+because the storage format never assumes files — that is a property of the
+design, not a separate adapter.
+
+## Why it is fast
+
+**Local I/O is the main path.**
+
+- Segments are memory-mapped, not read into the heap. A 1e6-document database
+  (157 MB) opens in **38 ms** with a **27 MB** resident-set increase.
+- Point reads are bloom filter → binary search → zero-copy `DocView`. A 1e6-doc
+  database answers hot reads at **p50 1.5 µs**.
+- The memtable keeps a hash index for lookups and a skip list for ordered range
+  scans, so a 1k-key window over 50k entries costs **~17.5M docs/s**.
+- Writes go through a framed, checksummed WAL; a document and its index entries
+  commit in one frame. Import of 1e6 docs runs at **355k docs/s** on real files.
+
+**The format never copies a document.**
+
+- `VXS` has stable field ids, delta-encoded keys and direct field offsets.
+  Reading three fields or projecting five allocates nothing.
+- Encoding a 130 B chat document runs at **~550 MB/s**; CRC-32C checks
+  segments and indexes at **~900 MB/s**.
+
+**The mutable surface is tiny.**
+
+- Segments are immutable; the manifest is the only object replaced on commit.
+  This is what makes crash recovery a commit order instead of a transaction log
+  protocol, and it is also why the same bytes work on a filesystem or an object
+  store.
+- Compaction rewrites segments and drops tombstones; the manifest swap is the
+  commit point.
+
+## Storage is I/O-agnostic, by construction
+
+```
+query/   collections, cursors, indexes, planner, schema, migrations, graph
+   ↓
+storage/ segments · manifest · memtable · WAL · arena
+   ↓            ↙                    ↘
+serde/     local files (dart:io + mmap)   object store (get/put/list)
+```
+
+Both backends share the block, WAL, segment and manifest codecs. A segment
+written by the local engine opens unchanged in the object-store engine and vice
+versa — this is covered by a compatibility test, not just claimed. Manifest
+placement follows each backend's atomicity model: two alternating slot files on
+disk (portable atomic replacement), a single replaceable object on object stores
+(where PUT is atomic).
+
+- **Local backend**: synchronous, `RandomAccessFile`, mmap for reads, fsync
+  policies, batching. This is the default and the fastest option.
+- **Object-store backend**: async; segments and the manifest are objects, write
+  batches are small WAL objects, segments are fetched lazily through an LRU
+  cache. The core ships the `ObjectStore` interface and an in-repo simulated
+  implementation; concrete cloud adapters are integrator code, not core code.
+- Choosing a backend never changes the document format, the segment format or
+  the query API.
+
+Object storage also inherits the format's request shape:
+
+| Operation | Requests |
+| --- | --- |
+| put/delete batch | 1 PUT |
+| flush | 1 PUT segment + 1 PUT manifest + 1 batch DELETE |
+| open | 1 GET manifest + 1 LIST + K GET (unflushed WAL only) |
+| first read of a segment | 1 GET, then served from the LRU cache |
+| compaction | S GET + 1 PUT segment + 1 PUT manifest + 1 batch DELETE |
+
+A 200k-document import over the object-store engine issues **412 requests**, a
+120k-change churn issues **123**, and a reopen issues **2** with no segment
+download. The full breakdown is in the benchmark below.
 
 ## Status
 
-Pre-alpha, but the local engine is usable end to end.
+Pre-alpha, usable end to end on the VM.
 
 | Area | State |
 | --- | --- |
@@ -34,19 +89,13 @@ Pre-alpha, but the local engine is usable end to end.
 | Secondary indexes (int32/int64, string, bool; equality and range) | done |
 | Typed codegen (direct code, separate `velxodb_generator` package) | done |
 | Schema versions, defaults, resumable migrations | done |
-| Reference bindings (restrict / cascade) + typed graph edges + BFS walk | done |
-| Object-store engine + request/byte benchmark | done |
+| Reference bindings (restrict / cascade) | done |
+| Typed graph edges + depth-limited BFS walk | done |
+| Object-store backend (async, same segment format) | done |
 | Full-text and n-gram primitives | planned |
 | Web (OPFS) sync engine, HTTP backends | planned |
 | Mongo-style client facade | planned |
 | Vector / geo field types | planned |
-
-## Packages
-
-| Package | Purpose |
-| --- | --- |
-| `packages/velxodb` | format, storage engines, query layer, public API |
-| `packages/velxodb_generator` | dev-time model/codec generation |
 
 ## Quick start
 
@@ -59,27 +108,25 @@ final messages = db.collection('messages');
 
 final key = Uint8List.fromList('m1'.codeUnits);
 messages.putSync(key, encodedDocument);
-final document = messages.getSync(key); // null when absent
+final document = messages.getSync(key);
 ```
 
 ### Queries
 
 ```dart
-// Indexed equality: the planner picks the index automatically.
 messages.createIndex(3, VxsType.string);
 final bySender = messages.findSync(Query(where: Predicate.eq(3, 'u1')));
 
-// Range over an indexed integer field, newest first via key order.
 final recent = messages.scanSync(start: since, limit: 50);
 
-// Stable pagination: a token is the last key of the previous page.
 final page = messages.pageSync(limit: 20);
 final next = messages.pageSync(limit: 20, after: page.next);
 ```
 
 ### Typed models
 
-Declare a spec and generate code (the generator is a dev dependency):
+The generator is a dev dependency; its output is plain Dart with const field
+ids and static codecs, no reflection on the hot path:
 
 ```dart
 const spec = ModelSpec(
@@ -94,34 +141,25 @@ const spec = ModelSpec(
     FieldSpec('body', 5, FieldKind.string),
   ],
 );
-final source = generateModel(spec); // write it to a .g.dart file
+final source = generateModel(spec);
 ```
-
-Then:
 
 ```dart
 final typed = ChatMessage.open(db);
 typed.putSync(ChatMessage.keyOf(message), message);
-final found = typed.findSync(Query(where: Predicate.eq(3, 'u1')));
 ```
 
-### References and graph
+### References, graph, migrations
 
 ```dart
-// A reference field holds the target key and gets a reverse index.
-messages.createReference(3, 'users');            // restrict by default
+messages.createReference(3, 'users');                       // restrict by default
 messages.createReference(4, 'users', onDelete: OnDelete.cascade);
 
-// Typed many-to-many edges, stored in both directions.
 final graph = db.graph;
 graph.link('member_of', NodeRef.of(users, userKey), NodeRef.of(groups, groupKey));
 final members = graph.incoming('member_of', groupNode);
 final network = graph.walk(userNode, maxDepth: 2, relations: {'follows'});
-```
 
-### Schema migrations
-
-```dart
 collection.migrateSync(toVersion: 2, steps: [
   MigrationStep(from: 1, to: 2, apply: (old, out) {
     copyFields(old, out, toId: 7);
@@ -131,32 +169,32 @@ collection.migrateSync(toVersion: 2, steps: [
 ]);
 ```
 
-Migrations are idempotent, resumable page by page, and preserve unknown fields
-byte for byte.
+## Benchmarks
 
-## Object storage (S3-style)
-
-`ObjectStore` is a four-method SPI (`get`, `put`, `delete`, `deleteMany`, `list`).
-`ObjectStoreEngine` stores segments and the manifest as objects and replays WAL
-objects on open:
-
-| Operation | Requests issued |
-| --- | --- |
-| put/delete batch | 1 PUT (WAL object) |
-| flush | 1 PUT segment + 1 PUT manifest + 1 batch DELETE |
-| open | 1 GET manifest + 1 LIST WAL + K GET WAL |
-| first read of a segment | 1 GET, then served from an LRU cache |
-| compaction | S GET segments + 1 PUT segment + 1 PUT manifest + 1 batch DELETE |
-
-`SimulatedObjectStore` counts requests and bytes in both directions, so the cost
-model is measurable without S3. Benchmark:
+Local chart (JIT snapshot, for orientation; CI renders the official chart):
 
 ```sh
 cd packages/velxodb
-dart run benchmark/s3_bench.dart
+dart run benchmark_test --output jsonl benchmark > ../../bench.jsonl
+python ../../.agents/tools/render_bench.py ../../bench.jsonl ../../.agents/benchmarks/benchmarks.png
 ```
 
-Example run (200k docs, churn, compaction, reads):
+AOT numbers from the local engine:
+
+| Workload | Result |
+| --- | --- |
+| VXS encode, 130 B chat doc | ~550 MB/s |
+| Engine point read (memtable) | ~18M ops/s |
+| 1e6 docs, real files | 355k docs/s import, 38 ms reopen, p50 1.5 µs, 1.21x disk |
+| Secondary index write | ~1.7M ops/s |
+| Index lookup / range | ~2.7M / ~3.0M ops/s |
+| Graph link / adjacency | ~1.9M / ~1.2M ops/s |
+
+Object-store engine, simulated with request/byte accounting:
+
+```sh
+dart run benchmark/object_store_bench.dart
+```
 
 ```
 phase                          wall    requests   (get/put/del/list)      out        in
@@ -168,53 +206,26 @@ compact                         366ms          8 (5/2/1/0)     27.9MB     36.4MB
 reopen                            0ms          2 (1/0/0/1)      0.0MB      0.0MB
 ```
 
-## Benchmarks
+## Packages
 
-Local chart (JIT snapshot, for orientation only):
-
-```sh
-cd packages/velxodb
-dart run benchmark_test --output jsonl benchmark > ../../bench.jsonl
-python ../../.agents/tools/render_bench.py ../../bench.jsonl ../../.agents/benchmarks/benchmarks.png
-```
-
-CI runs the same suite and renders `assets/benchmarks.svg` with
-[benchcat](https://github.com/unk-404/benchcat). Selected AOT numbers:
-
-| Workload | Result |
+| Package | Purpose |
 | --- | --- |
-| VXS encode, 130 B chat doc | ~550 MB/s |
-| Engine point read (memtable) | ~18M ops/s |
-| 1e6 docs, real files | 355k docs/s import, 38 ms reopen, p50 1.5 µs |
-| Secondary index write | ~1.7M ops/s |
-| Graph link / adjacency | ~1.9M / ~1.2M ops/s |
-
-## Architecture
-
-```
-serde/      VXS binary format, zero-copy views, doc builder, CRC-32C
-storage/    block, WAL, memtable (+ skip list), arena, segment, manifest,
-            local files (dart:io + mmap), object store + object-store engine
-query/      catalog, collections, cursor, indexes, planner, schema,
-            migration, references, graph
-```
-
-Dependencies only ever point downward: `query → storage → serde`. The storage
-layer never knows what a collection, an index or an edge is; each layer is
-tested against its own contract.
+| `packages/velxodb` | format, storage engines, query layer, public API |
+| `packages/velxodb_generator` | dev-time model/codec generation |
 
 ## Design rules
 
-- **No reflection and no runtime codegen.** The generator runs at development
-  time and emits plain Dart.
+- **No reflection, no runtime codegen.** The generator runs at development time.
 - **Zero-copy first.** Documents are read through views; projections and filters
   never materialize maps.
 - **Explicit ids.** Field ids, schema ids and versions are part of the on-disk
   contract and never derived from names.
-- **Crash safety is a commit order, not a transaction.** WAL first, then the
-  manifest; a document and its derived index entries share one WAL frame.
+- **Crash safety is a commit order.** WAL first, then the manifest; a document
+  and its derived entries share one WAL frame.
 - **Bounded work per query.** Walks have depth limits; pagination is a key
-  cursor; a global graph walk is opt-in and documented as O(nodes × relations).
+  cursor; global graph walks are opt-in and documented as O(nodes × relations).
+- **I/O stays at the edge.** The format and the engine are tested without a
+  filesystem; backends are interchangeable and small.
 
 ## License
 

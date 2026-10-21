@@ -90,7 +90,9 @@
   `list`), `SimulatedObjectStore` with request/byte counters, and an
   `ObjectStoreEngine` whose segments and manifest are objects, whose write
   batches are WAL objects, and whose segments are fetched lazily through an LRU
-  cache. Benchmark (`benchmark/s3_bench.dart`): 200k-doc import in 412 requests,
-  churn of 120k changes in 123 requests, reopen in 2 requests.
-- README rewritten.
+  cache. Benchmark (`benchmark/object_store_bench.dart`): 200k-doc import in 412
+  requests, churn of 120k changes in 123 requests, reopen in 2 requests.
+- Backend compatibility test: a segment written by the local engine opens in the
+  object-store engine and vice versa, proving the format is I/O-agnostic.
+- READMEs rewritten (workspace and package).
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).
