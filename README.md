@@ -193,7 +193,7 @@ Pre-alpha, usable end to end on the VM.
 | Read-only opens + shared reader locks | done |
 | Full backup/restore | done |
 | Full-text and n-gram primitives | done |
-| Web (OPFS) async DB: CRUD/scan/indexes/tx/refs/graph | done; full-text next |
+| Web (OPFS) async DB: CRUD/scan/indexes/tx/refs/graph/text | done; wasm/build smoke done |
 | Mongo-style client facade | planned |
 | Vector / geo field types | planned |
 
@@ -240,10 +240,12 @@ The OPFS store keeps a crash-safe append-only key index so `list` works without
 walking OPFS; each object is a blit logical file (chunked, sparse, worker pool).
 This async facade covers collections, document CRUD, ordered scans, key-cursor
 pages, secondary indexes (equality and range), write transactions (one WAL
-object for documents plus index maintenance), reference bindings with
-`restrict`/`cascade` enforcement, and typed graph edges with BFS walks. Full-text
-over OPFS is the next step. Chrome tests cover the adapter, engine reopen, CRUD,
-indexes, transactions, references and graph.
+object for documents, indexes and text postings), reference bindings with
+`restrict`/`cascade` enforcement, typed graph edges with BFS walks, and
+full-text search with word/n-gram tokenizers, `any`/`all` modes and per-hit
+verification. Chrome tests cover the adapter, engine reopen, CRUD, indexes,
+transactions, references, graph and full-text. Transactions currently do not
+run reference validation or cascade checks; that is tracked as a Web limitation.
 
 ### Queries
 
@@ -482,8 +484,9 @@ Remaining, in order:
 2. **Index-range performance** — isar is still about 1.25x faster on the
    12k-hit range benchmark; close it with a covering index or cheaper document
    fetch, then add the engine-level KV range cursor.
-3. **Web feature parity** — CRUD/scan/indexes/transactions/references/graph are
-   Chrome-tested; full-text over OPFS remains, then wasm smoke.
+3. **Web** — feature-complete async database on OPFS (CRUD/scan/indexes/
+   transactions/references/graph/full-text), Chrome and wasm smoke green;
+   remaining Web item is reference checks inside transactions.
 4. **Mongo-style facade** over the existing query layer.
 5. **Docs site and runnable examples**, plus long-running stress/fuzz jobs.
 

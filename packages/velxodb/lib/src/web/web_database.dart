@@ -5,6 +5,7 @@ import 'package:blit/blit.dart';
 
 import '../errors.dart';
 import '../query/catalog.dart';
+import '../query/fulltext.dart';
 import '../query/graph.dart';
 import '../query/index.dart';
 import '../query/reference.dart';
@@ -150,10 +151,14 @@ final class WebCollection {
   /// Inserts or replaces one document, maintaining every index.
   Future<void> put(Uint8List key, Bytes document) async {
     final old = await get(key);
-    if (old != null) await _removeIndexes(key, old);
+    if (old != null) {
+      await _removeIndexes(key, old);
+      await _removeText(key, old);
+    }
     await _validateReferences(document);
     await _engine.put(_key(key), document);
     await _addIndexes(key, document);
+    await _addText(key, document);
   }
 
   /// Deletes one document, checking/cascading references first.
@@ -162,8 +167,99 @@ final class WebCollection {
     if (old != null) {
       await _handleReferrers(key);
       await _removeIndexes(key, old);
+      await _removeText(key, old);
     }
     await _engine.delete(_key(key));
+  }
+
+  /// Creates (and backfills) a full-text index on [fieldId].
+  Future<void> createTextIndex(
+    int fieldId, {
+    Tokenizer tokenizer = const WordTokenizer(),
+  }) async {
+    if (_db._catalog.textIndexFor(_id, fieldId) != null) return;
+    _db._catalog = _db._catalog.withTextIndex(_id, fieldId, tokenizer);
+    await _db._saveCatalog();
+    final definition = _db._catalog.textIndexFor(_id, fieldId)!;
+    for (final entry in await scan()) {
+      await _addText(entry.key, entry.value, definition: definition);
+    }
+  }
+
+  /// Searches a full-text index.
+  Future<List<WebEntry>> searchText(
+    int fieldId,
+    String query, {
+    TextQueryMode mode = TextQueryMode.any,
+    int? limit,
+  }) async {
+    final definition = _db._catalog.textIndexFor(_id, fieldId);
+    if (definition == null) {
+      throw VelxoNotFoundException('no text index on field $fieldId');
+    }
+    final terms = definition.tokenize(query).toSet();
+    Set<String>? candidates;
+    for (final term in terms) {
+      final prefix = definition.termPrefix(term);
+      final postings = await _engine.scanRange(
+        start: prefix,
+        end: _upper(prefix),
+      );
+      final keys = <String>{
+        for (final posting in postings)
+          String.fromCharCodes(posting.key.sublist(prefix.length)),
+      };
+      candidates = candidates == null
+          ? keys
+          : (mode == TextQueryMode.all
+                ? candidates.intersection(keys)
+                : candidates.union(keys));
+      if (mode == TextQueryMode.all && candidates.isEmpty) break;
+    }
+    final out = <WebEntry>[];
+    for (final encoded in candidates ?? const <String>{}) {
+      final primaryKey = Uint8List.fromList(encoded.codeUnits);
+      final document = await get(primaryKey);
+      if (document == null) continue;
+      final text =
+          DocView.parse(document.asUint8List()).getString(fieldId) ?? '';
+      final tokens = definition.tokenize(text).toSet();
+      final matches = mode == TextQueryMode.all
+          ? terms.every(tokens.contains)
+          : terms.any(tokens.contains);
+      if (!matches) continue;
+      out.add((key: primaryKey, value: document));
+      if (limit != null && out.length >= limit) break;
+    }
+    return out;
+  }
+
+  Future<void> _addText(
+    Uint8List key,
+    Bytes document, {
+    TextIndexDefinition? definition,
+  }) async {
+    final view = DocView.parse(document.asUint8List());
+    for (final textIndex in definition == null
+        ? _db._catalog.textIndexes
+        : <TextIndexDefinition>[definition]) {
+      if (textIndex.collectionId != _id) continue;
+      final text = view.getString(textIndex.fieldId) ?? '';
+      for (final term in textIndex.tokenize(text).toSet()) {
+        await _engine.put(textIndex.entryKey(term, key), _empty);
+      }
+    }
+  }
+
+  Future<void> _removeText(Uint8List key, Bytes document) async {
+    final view = DocView.parse(document.asUint8List());
+    for (final textIndex in _db._catalog.textIndexes) {
+      if (textIndex.collectionId != _id) continue;
+      final text = view.getString(textIndex.fieldId) ?? '';
+      for (final term in textIndex.tokenize(text).toSet()) {
+        await _engine.delete(textIndex.entryKey(term, key));
+      }
+    }
   }
 
   /// Binds [fieldId] to [targetName] and indexes the field.
@@ -591,19 +687,26 @@ final class WebTransaction {
     Bytes document,
   ) async {
     final old = await get(collection, key);
-    if (old != null) _removeIndexes(collection, key, old);
+    if (old != null) {
+      _removeIndexes(collection, key, old);
+      _removeText(collection, key, old);
+    }
     final full = collection._key(key);
     _ops[String.fromCharCodes(full)] = WalOp.put(
       full,
       Uint8List.fromList(document.asUint8List()),
     );
     _addIndexes(collection, key, document);
+    _addText(collection, key, document);
   }
 
   /// Buffers a delete and its index maintenance.
   Future<void> delete(WebCollection collection, Uint8List key) async {
     final old = await get(collection, key);
-    if (old != null) _removeIndexes(collection, key, old);
+    if (old != null) {
+      _removeIndexes(collection, key, old);
+      _removeText(collection, key, old);
+    }
     final full = collection._key(key);
     _ops[String.fromCharCodes(full)] = WalOp.delete(full);
   }
@@ -642,5 +745,32 @@ final class WebTransaction {
       posting,
       WebCollection._empty.asUint8List(),
     );
+  }
+
+  void _addText(WebCollection collection, Uint8List key, Bytes document) {
+    final view = DocView.parse(document.asUint8List());
+    for (final textIndex in collection._db._catalog.textIndexes) {
+      if (textIndex.collectionId != collection._id) continue;
+      final text = view.getString(textIndex.fieldId) ?? '';
+      for (final term in textIndex.tokenize(text).toSet()) {
+        final posting = textIndex.entryKey(term, key);
+        _ops[String.fromCharCodes(posting)] = WalOp.put(
+          posting,
+          WebCollection._empty.asUint8List(),
+        );
+      }
+    }
+  }
+
+  void _removeText(WebCollection collection, Uint8List key, Bytes document) {
+    final view = DocView.parse(document.asUint8List());
+    for (final textIndex in collection._db._catalog.textIndexes) {
+      if (textIndex.collectionId != collection._id) continue;
+      final text = view.getString(textIndex.fieldId) ?? '';
+      for (final term in textIndex.tokenize(text).toSet()) {
+        final posting = textIndex.entryKey(term, key);
+        _ops[String.fromCharCodes(posting)] = WalOp.delete(posting);
+      }
+    }
   }
 }

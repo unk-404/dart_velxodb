@@ -173,4 +173,27 @@ void main() {
     expect(await db.graph.outgoing('follows', u1), isEmpty);
     await db.close();
   });
+
+  test('web full-text search maintains postings', () async {
+    final root = 'velxodb-text-${DateTime.now().microsecondsSinceEpoch}';
+    final db = await VelxoWebDatabase.open(root: root);
+    final items = await db.collection('items');
+    await items.createTextIndex(1);
+    await items.put(key('a'), doc('hello world'));
+    await items.put(key('b'), doc('hello dart'));
+
+    expect((await items.searchText(1, 'hello')).length, 2);
+    final all = await items.searchText(
+      1,
+      'hello dart',
+      mode: TextQueryMode.all,
+    );
+    expect(all.single.key, key('b'));
+
+    await items.put(key('b'), doc('changed'));
+    expect((await items.searchText(1, 'dart')), isEmpty);
+    await items.delete(key('a'));
+    expect((await items.searchText(1, 'hello')), isEmpty);
+    await db.close();
+  });
 }

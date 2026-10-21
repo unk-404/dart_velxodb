@@ -197,6 +197,10 @@
 - Web/OPFS graph: `db.graph` links forward and reverse edges in one WAL object,
   scans adjacency by prefix, and performs depth-capped BFS walks. Chrome tests
   cover link/outgoing/incoming/walk/unlink.
+- Web/OPFS full-text: `createTextIndex`, `searchText` with `any`/`all` modes,
+  word/n-gram tokenizers, posting maintenance on put/delete and per-hit
+  verification. Web transactions also buffer text postings. Chrome tests cover
+  create/backfill, search, update and delete.
 - Single-writer lock now also works on POSIX: an in-process registry of
   canonical paths complements the OS lock, which is process-wide there, so a
   second open inside the same process is rejected on Linux and macOS too.
