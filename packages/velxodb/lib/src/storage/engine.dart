@@ -2,7 +2,9 @@ import 'dart:typed_data';
 
 import 'package:blit/blit.dart';
 
+import '../errors.dart';
 import 'arena.dart';
+import 'check.dart';
 import 'directory.dart';
 import 'file.dart';
 import 'manifest.dart';
@@ -241,7 +243,9 @@ final class StorageEngine {
   T transactionSync<T>(T Function() body) {
     _checkOpen();
     if (_txOps != null) {
-      throw StateError('nested transactions are not supported');
+      throw const VelxoConflictException(
+        'nested transactions are not supported',
+      );
     }
     _txOps = <String, WalOp>{};
     try {
@@ -433,13 +437,11 @@ final class StorageEngine {
   /// Async facade over [syncNow].
   Future<void> sync() async => syncNow();
 
-  /// Flushes pending writes and releases every mapped segment.
-  ///
   /// Flushes pending writes and releases the directory lock.
   ///
   /// After this call the engine refuses reads as well as writes: a mapped
   /// segment must not be used after it is unmapped.
-  Future<void> close() async {
+  void closeSync() {
     if (_closed) return;
     _closed = true;
     _walFile.flushSync();
@@ -450,6 +452,116 @@ final class StorageEngine {
     _segmentMaps.clear();
     _segments.clear();
     _directory.closeSync();
+  }
+
+  /// Async facade over [closeSync].
+  Future<void> close() async => closeSync();
+
+  /// Verifies the manifest, every referenced segment and the file set.
+  ///
+  /// This is a read-only diagnostic: it does not repair anything. With
+  /// [verifyBlocks] (default) every block's CRC is checked and every document
+  /// is parsed, which costs time proportional to the data size.
+  CheckReport checkSync({bool verifyBlocks = true}) {
+    _checkOpen();
+    final issues = <CheckIssue>[];
+    final stats = <String, int>{};
+
+    final segmentNames = <String>[
+      for (final name in _directory.listSync())
+        if (name.startsWith(segmentPrefix) && name.endsWith(segmentSuffix)) name,
+    ];
+    stats['segmentFiles'] = segmentNames.length;
+
+    Manifest? manifest;
+    try {
+      manifest = ManifestStore(_directory).loadSync();
+    } on Object catch (error) {
+      issues.add(
+        CheckIssue(CheckSeverity.error, 'manifest', 'read failed: $error'),
+      );
+    }
+
+    if (manifest == null) {
+      if (segmentNames.isNotEmpty) {
+        issues.add(
+          const CheckIssue(
+            CheckSeverity.error,
+            'no-manifest',
+            'segment files exist but no manifest decodes',
+          ),
+        );
+      }
+    } else {
+      stats['manifestGeneration'] = manifest.generation;
+      stats['segments'] = manifest.segments.length;
+      final referenced = <String>{};
+      var entries = 0;
+      var bytes = 0;
+      var documents = 0;
+      for (final info in manifest.segments) {
+        referenced.add(info.name);
+        entries += info.entryCount;
+        bytes += info.byteLength;
+        if (!_directory.existsSync(info.name)) {
+          issues.add(
+            CheckIssue(CheckSeverity.error, 'missing-segment', info.name),
+          );
+          continue;
+        }
+        SyncStorageFile? file;
+        try {
+          file = _directory.openSync(info.name, create: false);
+          final data = file.readAllSync();
+          if (data.length != info.byteLength) {
+            issues.add(
+              CheckIssue(
+                CheckSeverity.warning,
+                'segment-size',
+                '${info.name}: expected ${info.byteLength}, found ${data.length}',
+              ),
+            );
+          }
+          final reader = SegmentReader(data);
+          if (verifyBlocks) {
+            reader.forEach((_) => documents++);
+          }
+        } on Object catch (error) {
+          issues.add(
+            CheckIssue(
+              CheckSeverity.error,
+              'segment-read',
+              '${info.name}: $error',
+            ),
+          );
+        } finally {
+          file?.closeSync();
+        }
+      }
+      stats['entries'] = entries;
+      stats['bytes'] = bytes;
+      if (verifyBlocks) stats['documents'] = documents;
+      for (final name in segmentNames) {
+        if (!referenced.contains(name)) {
+          issues.add(
+            CheckIssue(CheckSeverity.warning, 'orphan-segment', name),
+          );
+        }
+      }
+    }
+
+    if (_directory.existsSync(walFileName)) {
+      SyncStorageFile? file;
+      try {
+        file = _directory.openSync(walFileName, create: false);
+        stats['walBytes'] = file.lengthSync;
+      } finally {
+        file?.closeSync();
+      }
+    } else {
+      stats['walBytes'] = 0;
+    }
+    return CheckReport(issues, stats);
   }
 
   void _afterWrite() {
@@ -485,6 +597,6 @@ final class StorageEngine {
       '$segmentPrefix${id.toString().padLeft(6, '0')}$segmentSuffix';
 
   void _checkOpen() {
-    if (_closed) throw StateError('engine is closed');
+    if (_closed) throw const VelxoClosedException('engine is closed');
   }
 }

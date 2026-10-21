@@ -13,9 +13,11 @@
 /// minimal async file interface.
 library;
 
+export 'src/errors.dart';
 export 'src/storage/arena.dart';
 export 'src/storage/block.dart';
 export 'src/storage/bloom.dart';
+export 'src/storage/check.dart';
 export 'src/storage/directory.dart';
 export 'src/storage/engine.dart';
 export 'src/storage/file.dart';

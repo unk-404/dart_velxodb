@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:blit/bytes_ffi.dart' show MappedRegion, MmapFile, openMmapFileSync;
 
+import '../../errors.dart';
 import '../directory.dart';
 import '../file.dart';
 
@@ -23,7 +24,9 @@ final class LocalStorageDirectory implements SyncStorageDirectory {
       handle.lockSync(FileLock.exclusive);
     } on FileSystemException {
       handle.closeSync();
-      throw StateError('database is already open: ${directory.path}');
+      throw VelxoLockedException(
+        'database is already open: ${directory.path}',
+      );
     }
     _lock = handle;
   }

@@ -113,5 +113,13 @@
   batch or transaction), the default `Durability.batched` fsyncs on flush, close
   and `db.sync()` (the group-commit point), and `Durability.none` leaves
   durability to the caller. Segments now auto-compact at 4 by default.
+- Integrity check: `db.checkSync(deep: true)` verifies the manifest, segment
+  blocks (CRC + document parse), orphan files, and every secondary/full-text
+  posting against its document. Typed errors replace ad-hoc `StateError`s:
+  `VelxoLockedException`, `VelxoCorruptException`, `VelxoClosedException`,
+  `VelxoConflictException`, `VelxoNotFoundException`.
+- Corruption handling: if manifest files exist but none decodes, opening now
+  raises `VelxoCorruptException` instead of silently starting empty; a failed
+  open releases the directory lock.
 - READMEs rewritten (workspace and package).
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).

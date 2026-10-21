@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:blit/blit.dart';
 
+import '../errors.dart';
 import '../serde/builder.dart';
 import '../serde/schema.dart';
 import '../serde/string_view.dart';
@@ -129,7 +130,7 @@ final class Collection {
     }
     final targetId = catalog.collectionIdOf(targetName);
     if (targetId == null) {
-      throw StateError('target collection "$targetName" does not exist');
+      throw VelxoNotFoundException('target collection "$targetName" does not exist');
     }
     final definition = catalog.registerReference(
       id,
@@ -171,7 +172,7 @@ final class Collection {
   List<ScanEntry> lookupByIndexSync(int fieldId, Object value) {
     final definition = _indexes[fieldId];
     if (definition == null) {
-      throw StateError('no index on field $fieldId');
+      throw VelxoNotFoundException('no index on field $fieldId');
     }
     final prefix = definition.valuePrefix(value);
     final encodedLength = prefix.length - 2;
@@ -211,7 +212,7 @@ final class Collection {
   }) {
     final definition = _indexes[fieldId];
     if (definition == null) {
-      throw StateError('no index on field $fieldId');
+      throw VelxoNotFoundException('no index on field $fieldId');
     }
     final namespace = definition.namespacePrefix;
     Uint8List? lower;
@@ -462,7 +463,7 @@ final class Collection {
   }) {
     final definition = _textIndexes[fieldId];
     if (definition == null) {
-      throw StateError('no text index on field $fieldId');
+      throw VelxoNotFoundException('no text index on field $fieldId');
     }
     final terms = definition.tokenize(query).toSet();
     if (terms.isEmpty) return const <ScanEntry>[];

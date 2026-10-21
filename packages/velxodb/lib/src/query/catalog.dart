@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import '../errors.dart';
 import '../serde/crc32c.dart';
 import '../serde/schema.dart';
 import '../serde/vxs.dart';
@@ -483,7 +484,9 @@ final class CatalogStore {
       if (bytes.isEmpty) return Catalog.empty();
       return Catalog.decode(bytes);
     } on VxsFormatException {
-      throw StateError('catalog is corrupt; refusing to open the database');
+      throw const VelxoCorruptException(
+        'catalog is corrupt; refusing to open the database',
+      );
     } finally {
       file.closeSync();
     }

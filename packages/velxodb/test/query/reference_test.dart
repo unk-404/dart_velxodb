@@ -50,7 +50,7 @@ void main() {
     test('rejects an unknown target collection', () {
       expect(
         () => messages.createReference(3, 'nope'),
-        throwsStateError,
+        throwsA(isA<VelxoNotFoundException>()),
       );
     });
 

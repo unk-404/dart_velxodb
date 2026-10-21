@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import '../errors.dart';
 import '../serde/crc32c.dart';
 import '../serde/vxs.dart';
 import 'directory.dart';
@@ -143,10 +144,16 @@ final class ManifestStore {
   ];
 
   /// Loads the newest valid manifest, or `null` when the database is empty.
+  ///
+  /// A single torn slot is tolerated (the other slot is authoritative). If
+  /// manifest files exist but none decodes, the database is corrupt rather than
+  /// empty; returning `null` there would silently drop every document.
   Manifest? loadSync() {
     Manifest? best;
+    var sawFile = false;
     for (var slot = 0; slot < slotNames.length; slot++) {
       if (!directory.existsSync(slotNames[slot])) continue;
+      sawFile = true;
       SyncStorageFile? file;
       try {
         file = directory.openSync(slotNames[slot]);
@@ -162,6 +169,11 @@ final class ManifestStore {
       } finally {
         file?.closeSync();
       }
+    }
+    if (sawFile && best == null) {
+      throw const VelxoCorruptException(
+        'manifest files exist but none decodes; refusing to open',
+      );
     }
     return best;
   }

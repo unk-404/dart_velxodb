@@ -1,9 +1,14 @@
+import 'dart:typed_data';
+
 import '../serde/schema.dart';
+import '../serde/view.dart';
+import '../storage/check.dart';
 import '../storage/directory.dart';
 import '../storage/engine.dart';
 import '../storage/io/storage_io.dart';
 import 'catalog.dart';
 import 'collection.dart';
+import 'cursor.dart';
 import 'fulltext.dart';
 import 'graph.dart';
 import 'index.dart';
@@ -35,17 +40,28 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
     int compactionThreshold = 4,
   }) {
     final directory = LocalStorageDirectory(path);
-    final catalog = CatalogStore(directory).loadSync();
-    final engine = StorageEngine(
-      directory: directory,
-      autoFlush: autoFlush,
-      autoCompact: autoCompact,
-      compactionThreshold: compactionThreshold,
-      durability: durability,
-      maxMemtableBytes: maxMemtableBytes,
-    );
-    engine.openSync();
-    return VelxoDatabase._(directory, engine, catalog);
+    StorageEngine? engine;
+    try {
+      final catalog = CatalogStore(directory).loadSync();
+      engine = StorageEngine(
+        directory: directory,
+        autoFlush: autoFlush,
+        autoCompact: autoCompact,
+        compactionThreshold: compactionThreshold,
+        durability: durability,
+        maxMemtableBytes: maxMemtableBytes,
+      );
+      engine.openSync();
+      return VelxoDatabase._(directory, engine, catalog);
+    } on Object {
+      // A failed open must not leak the directory lock.
+      if (engine != null) {
+        engine.closeSync();
+      } else {
+        directory.closeSync();
+      }
+      rethrow;
+    }
   }
 
   /// Async facade over [openSync].
@@ -219,6 +235,197 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
 
   /// Merges segments and drops tombstones.
   bool compactSync() => _engine.compactSync();
+
+  /// Verifies the manifest, segments, catalog and (with [deep]) every index.
+  ///
+  /// Read-only diagnostic; nothing is repaired. [deep] scans every secondary
+  /// and full-text posting and re-reads its document, which costs time
+  /// proportional to the index size.
+  CheckReport checkSync({bool deep = false}) {
+    final engineReport = _engine.checkSync();
+    final issues = List<CheckIssue>.of(engineReport.issues);
+    final stats = Map<String, int>.of(engineReport.stats);
+    stats['collections'] = _catalog.entries.length;
+    stats['indexes'] = _catalog.indexes.length;
+    stats['textIndexes'] = _catalog.textIndexes.length;
+    stats['references'] = _catalog.references.length;
+    stats['relations'] = _catalog.relations.length;
+
+    if (deep) {
+      var entries = 0;
+      var postings = 0;
+      for (final index in _catalog.indexes) {
+        final result = _checkIndex(index);
+        entries += result.checked;
+        if (result.dangling > 0) {
+          issues.add(
+            CheckIssue(
+              CheckSeverity.error,
+              'dangling-index',
+              'index on collection ${index.collectionId} field '
+                  '${index.fieldId}: ${result.dangling} postings point at '
+                  'missing documents',
+            ),
+          );
+        }
+        if (result.stale > 0) {
+          issues.add(
+            CheckIssue(
+              CheckSeverity.error,
+              'stale-index',
+              'index on collection ${index.collectionId} field '
+                  '${index.fieldId}: ${result.stale} postings disagree with '
+                  'their document',
+            ),
+          );
+        }
+      }
+      for (final textIndex in _catalog.textIndexes) {
+        final result = _checkTextIndex(textIndex);
+        postings += result.checked;
+        if (result.dangling > 0) {
+          issues.add(
+            CheckIssue(
+              CheckSeverity.error,
+              'dangling-text-index',
+              'text index on collection ${textIndex.collectionId} field '
+                  '${textIndex.fieldId}: ${result.dangling} postings point at '
+                  'missing documents',
+            ),
+          );
+        }
+        if (result.stale > 0) {
+          issues.add(
+            CheckIssue(
+              CheckSeverity.error,
+              'stale-text-index',
+              'text index on collection ${textIndex.collectionId} field '
+                  '${textIndex.fieldId}: ${result.stale} postings no longer '
+                  'occur in their document',
+            ),
+          );
+        }
+      }
+      stats['deepIndexEntries'] = entries;
+      stats['deepTextPostings'] = postings;
+    }
+    return CheckReport(issues, stats);
+  }
+
+  ({int checked, int dangling, int stale}) _checkIndex(
+    IndexDefinition definition,
+  ) {
+    final namespace = _namespace(definition.indexId);
+    final cursor = buildCollectionCursor(
+      engine: _engine,
+      fullPrefix: namespace,
+      lower: namespace,
+      includeLower: true,
+      upper: _prefixUpperBound(namespace),
+      includeUpper: false,
+    );
+    var checked = 0;
+    var dangling = 0;
+    var stale = 0;
+    while (cursor.moveNext()) {
+      checked++;
+      final raw = cursor.current.key; // [encodedValue][primaryKey]
+      final length = definition.encodedValueLength(raw, 0);
+      final primaryKey = Uint8List.sublistView(raw, length);
+      final document = _engine.get(
+        _composeKey(definition.collectionId, primaryKey),
+      );
+      if (document == null) {
+        dangling++;
+        continue;
+      }
+      final value = definition.readValue(
+        DocView.parse(document.asUint8List()),
+      );
+      if (value != _decodeIndexValue(definition, raw)) stale++;
+    }
+    return (checked: checked, dangling: dangling, stale: stale);
+  }
+
+  ({int checked, int dangling, int stale}) _checkTextIndex(
+    TextIndexDefinition definition,
+  ) {
+    final namespace = _namespace(definition.indexId);
+    final cursor = buildCollectionCursor(
+      engine: _engine,
+      fullPrefix: namespace,
+      lower: namespace,
+      includeLower: true,
+      upper: _prefixUpperBound(namespace),
+      includeUpper: false,
+    );
+    var checked = 0;
+    var dangling = 0;
+    var stale = 0;
+    while (cursor.moveNext()) {
+      checked++;
+      final raw = cursor.current.key; // [encodedTerm][primaryKey]
+      final term = decodeOrderedString(raw, 0);
+      final primaryKey = Uint8List.sublistView(raw, term.length);
+      final document = _engine.get(
+        _composeKey(definition.collectionId, primaryKey),
+      );
+      if (document == null) {
+        dangling++;
+        continue;
+      }
+      final text =
+          DocView.parse(document.asUint8List()).getString(definition.fieldId) ??
+          '';
+      if (!definition.tokenize(text).contains(term.value)) stale++;
+    }
+    return (checked: checked, dangling: dangling, stale: stale);
+  }
+
+  static Object? _decodeIndexValue(
+    IndexDefinition definition,
+    Uint8List raw,
+  ) {
+    switch (definition.type) {
+      case VxsType.string:
+        return decodeOrderedString(raw, 0).value;
+      case VxsType.boolean:
+        return raw[0] == 1;
+      case VxsType.int32:
+      case VxsType.int64:
+        final negative = raw[0] == 0x00;
+        var magnitude = 0;
+        for (var i = 1; i <= 8; i++) {
+          final byte = negative ? raw[i] ^ 0xFF : raw[i];
+          magnitude = (magnitude << 8) | byte;
+        }
+        return negative ? -magnitude : magnitude;
+      default:
+        return null;
+    }
+  }
+
+  static Uint8List _namespace(int id) =>
+      Uint8List.fromList(<int>[(id >> 8) & 0xFF, id & 0xFF]);
+
+  static Uint8List _composeKey(int collectionId, Uint8List key) {
+    final out = Uint8List(2 + key.length);
+    out[0] = (collectionId >> 8) & 0xFF;
+    out[1] = collectionId & 0xFF;
+    out.setRange(2, out.length, key);
+    return out;
+  }
+
+  static Uint8List? _prefixUpperBound(Uint8List prefix) {
+    final out = Uint8List.fromList(prefix);
+    for (var i = out.length - 1; i >= 0; i--) {
+      if (out[i] != 0xFF) {
+        out[i]++;
+        return Uint8List.sublistView(out, 0, i + 1);
+      }
+    }
+    return null;
+  }
 
   /// Closes the engine and unmaps segments.
   ///

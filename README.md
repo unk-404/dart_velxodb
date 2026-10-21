@@ -97,12 +97,17 @@ download. The full breakdown is in the benchmark below.
 - **Bounded memory and read amplification.** The memtable auto-flushes at 64 MB
   and segments auto-compact at 4, both configurable on open; the write that
   crosses a threshold pays for the work.
+- **Integrity check.** `db.checkSync(deep: true)` verifies the manifest, every
+  segment block (CRC plus document parse), orphan segment files, and every
+  secondary/full-text posting against its document. It is read-only.
+- **Typed errors.** `VelxoLockedException`, `VelxoCorruptException`,
+  `VelxoClosedException`, `VelxoConflictException`, `VelxoNotFoundException`.
 - **Graceful shutdown.** `db.close(flush: true)` writes a segment so the next
   open reads the manifest instead of replaying the log.
 
-Not yet provided (tracked in `research/productization.md`): an integrity-check
-API, typed errors, multi-isolate concurrency, backup/restore, web support, and
-the Mongo-style facade.
+Not yet provided (tracked in `research/productization.md`): multi-isolate
+concurrency, backup/restore, web support, the Mongo-style facade, and the
+crash-point matrix in CI.
 
 ## Status
 

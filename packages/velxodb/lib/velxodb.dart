@@ -8,6 +8,7 @@
 /// * `package:velxodb/testing.dart` — conformance kits for custom backends.
 library;
 
+export 'src/errors.dart';
 export 'src/query/catalog.dart' show Catalog, CollectionEntry;
 export 'src/query/collection.dart' show Collection;
 export 'src/query/cursor.dart' show CollectionCursor;

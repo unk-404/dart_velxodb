@@ -285,8 +285,8 @@ void main() {
       expect(walFileOf(directory).flushCount, greaterThan(0));
 
       await engine.close();
-      expect(() => engine.putSync(k('b'), doc('y')), throwsStateError);
-      expect(() => engine.get(k('a')), throwsStateError);
+      expect(() => engine.putSync(k('b'), doc('y')), throwsA(isA<VelxoClosedException>()));
+      expect(() => engine.get(k('a')), throwsA(isA<VelxoClosedException>()));
     });
   });
 }

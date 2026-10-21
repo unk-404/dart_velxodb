@@ -106,7 +106,7 @@ void main() {
     directory.closeSync(); // release the lock held by setUp
     final path = '${root.path}${Platform.pathSeparator}locked';
     final first = LocalStorageDirectory(path);
-    expect(() => LocalStorageDirectory(path), throwsStateError);
+    expect(() => LocalStorageDirectory(path), throwsA(isA<VelxoLockedException>()));
     first.closeSync();
 
     final second = LocalStorageDirectory(path);

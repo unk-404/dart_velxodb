@@ -83,7 +83,7 @@ void main() {
         () => engine.transactionSync(() {
           engine.transactionSync(() {});
         }),
-        throwsStateError,
+        throwsA(isA<VelxoConflictException>()),
       );
       expect(engine.inTransaction, isFalse);
     });

@@ -150,7 +150,7 @@ void main() {
     test('rejects searching an unindexed field', () {
       expect(
         () => collection.searchTextSync(9, 'x'),
-        throwsStateError,
+        throwsA(isA<VelxoNotFoundException>()),
       );
     });
   });
