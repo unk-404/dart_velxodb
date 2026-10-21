@@ -97,6 +97,22 @@ value = "value * 100 * 64 / 1000000"
 group = "Storage"
 
 [[row]]
+id = "query collection.get"
+label = "Collection point read"
+note = "segment + memtable"
+unit = "Mops/s"
+value = "value * 100 * 64 / 1000000"
+group = "Query"
+
+[[row]]
+id = "query collection.scan"
+label = "Collection prefix scan"
+note = "64 entries, merged"
+unit = "Kdocs/s"
+value = "value * 100 * 64 / 1000"
+group = "Query"
+
+[[row]]
 id = "storage block.write"
 label = "Pack a block (20 docs)"
 note = "includes block CRC"

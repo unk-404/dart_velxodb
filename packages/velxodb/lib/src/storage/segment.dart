@@ -371,21 +371,65 @@ final class SegmentReader {
   /// Visits every entry in key order, tombstones included.
   void forEachEntry(void Function(Uint8List key, DocView? document) visit) {
     for (var i = 0; i < _indexCount; i++) {
+      _visitEntry(i, visit);
+    }
+  }
+
+  /// Visits entries whose key starts with [prefix], in key order.
+  void forEachEntryPrefix(
+    Uint8List prefix,
+    void Function(Uint8List key, DocView? document) visit,
+  ) {
+    if (prefix.isEmpty) {
+      forEachEntry(visit);
+      return;
+    }
+    // Lower bound: first entry whose key is >= prefix.
+    var low = 0;
+    var high = _indexCount - 1;
+    while (low <= high) {
+      final middle = (low + high) >> 1;
+      final comparison = _compareEntry(middle, prefix);
+      if (comparison < 0) {
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+    for (var i = low; i < _indexCount; i++) {
       final entryStart = _entryStart(i);
       final keyLength = VxsLe.u16(buffer, entryStart);
-      final key = Uint8List.sublistView(
-        buffer,
-        entryStart + 2,
-        entryStart + 2 + keyLength,
-      );
-      final docOffset = VxsLe.u32(buffer, entryStart + 2 + keyLength);
-      visit(
-        key,
-        docOffset == segmentTombstone
-            ? null
-            : DocView.parse(buffer, docOffset, end - docOffset),
-      );
+      if (keyLength < prefix.length ||
+          !_rangeStartsWith(entryStart + 2, keyLength, prefix)) {
+        break;
+      }
+      _visitEntry(i, visit);
     }
+  }
+
+  void _visitEntry(int index, void Function(Uint8List key, DocView? document) visit) {
+    final entryStart = _entryStart(index);
+    final keyLength = VxsLe.u16(buffer, entryStart);
+    final key = Uint8List.sublistView(
+      buffer,
+      entryStart + 2,
+      entryStart + 2 + keyLength,
+    );
+    final docOffset = VxsLe.u32(buffer, entryStart + 2 + keyLength);
+    visit(
+      key,
+      docOffset == segmentTombstone
+          ? null
+          : DocView.parse(buffer, docOffset, end - docOffset),
+    );
+  }
+
+  bool _rangeStartsWith(int start, int length, Uint8List prefix) {
+    if (length < prefix.length) return false;
+    for (var i = 0; i < prefix.length; i++) {
+      if (buffer[start + i] != prefix[i]) return false;
+    }
+    return true;
   }
 
   /// Visits every document in block order.

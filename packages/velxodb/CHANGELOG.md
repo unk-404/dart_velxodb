@@ -39,4 +39,8 @@
 - Segments are memory-mapped on open instead of copied; a 1e6-document database
   opens in 38 ms with a 27 MB resident-set increase. Closing an engine now
   unmaps segments and refuses further reads.
+- Query layer: `Velxo.open`, `VelxoDatabase.collection`, a CRC-checked catalog
+  with atomic temp-and-rename saves, and collections whose keys are prefixed
+  with a stable two-byte id. Point reads, writes, deletes and sorted prefix
+  scans merge the memtable with segments newest-first and honour tombstones.
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).
