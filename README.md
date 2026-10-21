@@ -193,7 +193,7 @@ Pre-alpha, usable end to end on the VM.
 | Read-only opens + shared reader locks | done |
 | Full backup/restore | done |
 | Full-text and n-gram primitives | done |
-| Web (OPFS) sync engine, HTTP backends | OPFS store done (async); facade in progress |
+| Web (OPFS) async database (CRUD/scan/page) | done; indexed queries next |
 | Mongo-style client facade | planned |
 | Vector / geo field types | planned |
 
@@ -223,22 +223,25 @@ await db.close(flush: true); // graceful shutdown: reopen reads the manifest,
 ### Web (async)
 
 Browsers cannot run the synchronous local engine. The Web stack uses blit's
-chunked OPFS backend and the existing async object-store engine, with the same
-segment/manifest bytes as the VM:
+chunked OPFS backend and the async object-store engine, with the same document
+encoding and collection key layout as the VM:
 
 ```dart
-final store = await OpfsObjectStore.open(root: 'chat');
-final engine = ObjectStoreEngine(store: store);
-await engine.open();
-await engine.put(key, encodedDocument);
-final document = await engine.get(key);
-await engine.close();
+final db = await VelxoWebDatabase.open(root: 'chat');
+final messages = await db.collection('messages');
+
+await messages.put(key, encodedDocument);
+final document = await messages.get(key);
+final page = await messages.page(limit: 100);
+await db.close();
 ```
 
 The OPFS store keeps a crash-safe append-only key index so `list` works without
 walking OPFS; each object is a blit logical file (chunked, sparse, worker pool).
-The async database/query facade is the next step; the adapter and
-`ObjectStoreEngine` are Chrome-tested end to end, including a reopen.
+This async facade covers collections, document CRUD, ordered scans and
+key-cursor pages. Secondary indexes, transactions, references, graph and
+full-text over OPFS are the next step. Chrome tests cover the adapter, engine
+reopen, and the database facade.
 
 ### Queries
 
@@ -477,8 +480,9 @@ Remaining, in order:
 2. **Index-range performance** — isar is still about 1.25x faster on the
    12k-hit range benchmark; close it with a covering index or cheaper document
    fetch, then add the engine-level KV range cursor.
-3. **Web query facade** over the async object-store engine; the OPFS store and
-   engine are done and Chrome-tested, the database/collection API is next.
+3. **Web indexed queries** — the OPFS store, async engine and CRUD/scan facade
+   are done and Chrome-tested; secondary indexes, transactions, references,
+   graph and full-text over OPFS are next.
 4. **Mongo-style facade** over the existing query layer.
 5. **Docs site and runnable examples**, plus long-running stress/fuzz jobs.
 

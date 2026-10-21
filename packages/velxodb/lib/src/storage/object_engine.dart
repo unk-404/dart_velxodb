@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:blit/blit.dart';
 
+import '../serde/string_view.dart';
 import 'arena.dart';
 import 'manifest.dart';
 import 'memtable.dart';
@@ -238,6 +239,94 @@ final class ObjectStoreEngine {
   Future<void> close({bool flush = true}) async {
     if (flush) await this.flush();
   }
+
+  /// Returns entries in ascending key order inside the requested range.
+  ///
+  /// Newer sources win: the memtable, then segments newest to oldest. Tombstones
+  /// are skipped. This is the async counterpart of the local engine's range
+  /// scan, used by the Web query layer.
+  Future<List<({Uint8List key, Bytes? document})>> scanRange({
+    Uint8List? start,
+    Uint8List? end,
+    bool includeStart = true,
+    bool includeEnd = false,
+    int? limit,
+  }) async {
+    final memKeys = <Uint8List>[];
+    final memDocs = <Bytes?>[];
+    _memtable.forEachRange(
+      start,
+      end,
+      (key, chunk, offset, length) {
+        memKeys.add(Uint8List.fromList(key));
+        memDocs.add(length < 0 ? null : _arena.view(chunk, offset, length));
+      },
+      includeLower: includeStart,
+      includeUpper: includeEnd,
+    );
+
+    final cursors = <SegmentEntryCursor>[];
+    final cursorKeys = <Uint8List?>[];
+    for (var i = _segmentInfos.length - 1; i >= 0; i--) {
+      final cursor = (await _readerAt(i)).entryCursor(
+        lower: start,
+        includeLower: includeStart,
+        upper: end,
+        includeUpper: includeEnd,
+      );
+      cursors.add(cursor);
+      cursorKeys.add(cursor.moveNext() ? cursor.key : null);
+    }
+
+    final out = <({Uint8List key, Bytes? document})>[];
+    var memIndex = 0;
+    while (true) {
+      Uint8List? winner;
+      if (memIndex < memKeys.length) winner = memKeys[memIndex];
+      for (final key in cursorKeys) {
+        if (key == null) continue;
+        if (winner == null ||
+            StringView.compareRanges(
+                  key,
+                  0,
+                  key.length,
+                  winner,
+                  0,
+                  winner.length,
+                ) <
+                0) {
+          winner = key;
+        }
+      }
+      if (winner == null) break;
+
+      Bytes? document;
+      var matched = false;
+      if (memIndex < memKeys.length &&
+          _sameKey(memKeys[memIndex], winner)) {
+        document = memDocs[memIndex];
+        memIndex++;
+        matched = true;
+      }
+      for (var i = 0; i < cursors.length; i++) {
+        final key = cursorKeys[i];
+        if (key == null || !_sameKey(key, winner)) continue;
+        if (!matched) {
+          document = cursors[i].document?.toBytes();
+          matched = true;
+        }
+        cursorKeys[i] = cursors[i].moveNext() ? cursors[i].key : null;
+      }
+      if (document == null) continue;
+      out.add((key: Uint8List.fromList(winner), document: document));
+      if (limit != null && out.length >= limit) break;
+    }
+    return out;
+  }
+
+  static bool _sameKey(Uint8List a, Uint8List b) =>
+      a.length == b.length &&
+      StringView.compareRanges(a, 0, a.length, b, 0, b.length) == 0;
 
   Future<SegmentReader> _readerAt(int index) async {
     final cached = _segmentCache[index];

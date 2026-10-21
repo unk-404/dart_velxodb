@@ -37,6 +37,7 @@ export 'src/query/types.dart' show ScanEntry, ScanPage;
 export 'src/query/velxo.dart';
 export 'src/upgrade_journal.dart';
 export 'src/version.dart';
+export 'src/web/web_database.dart';
 export 'src/worker/worker_client.dart';
 
 /// Semantic version of the package.

@@ -174,6 +174,13 @@
   (intent before object, torn tail ignored). The existing `ObjectStoreEngine`
   runs on top of it with the same segment/manifest bytes as the VM. Chrome tests
   cover put/get/list/delete, a 300 KiB object, and an engine write/flush/reopen.
+- Web/OPFS facade: `VelxoWebDatabase.open(root:)` + `WebCollection` on the async
+  `ObjectStoreEngine`: document CRUD, ordered scans and key-cursor pages, with
+  the same VXS encoding and two-byte collection prefixes as the VM. The catalog
+  is stored as an object. `ObjectStoreEngine.scanRange` merges the memtable and
+  segments asynchronously, with newest-wins and tombstone handling. Chrome tests
+  cover CRUD/scan/page and a reopen; secondary indexes and transactions are the
+  next Web step.
 - Single-writer lock now also works on POSIX: an in-process registry of
   canonical paths complements the OS lock, which is process-wide there, so a
   second open inside the same process is rejected on Linux and macOS too.
