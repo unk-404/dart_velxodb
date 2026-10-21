@@ -239,4 +239,7 @@ final class _NullDirectory implements SyncStorageDirectory {
   @override
   MappedFile mapSync(String name) =>
       throw UnsupportedError('null directory');
+
+  @override
+  void closeSync() {}
 }

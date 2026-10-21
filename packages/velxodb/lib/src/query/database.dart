@@ -20,10 +20,25 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
     : _catalogStore = CatalogStore(_directory);
 
   /// Opens (and creates) the database at [path].
-  static VelxoDatabase openSync(String path) {
+  ///
+  /// The directory is locked exclusively: a second open of the same path fails
+  /// fast instead of letting two writers corrupt the log. [autoFlush] bounds
+  /// memtable memory; when it is crossed the write that crosses it pays for the
+  /// flush.
+  static VelxoDatabase openSync(
+    String path, {
+    bool autoFlush = true,
+    int maxMemtableBytes = 64 << 20,
+    bool autoSync = false,
+  }) {
     final directory = LocalStorageDirectory(path);
     final catalog = CatalogStore(directory).loadSync();
-    final engine = StorageEngine(directory: directory);
+    final engine = StorageEngine(
+      directory: directory,
+      autoFlush: autoFlush,
+      autoSync: autoSync,
+      maxMemtableBytes: maxMemtableBytes,
+    );
     engine.openSync();
     return VelxoDatabase._(directory, engine, catalog);
   }
@@ -163,6 +178,21 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
 
   @override
   String? relationName(int id) => _catalog.relationName(id);
+
+  /// Whether a transaction is currently open.
+  bool get inTransaction => _engine.inTransaction;
+
+  /// Runs [body] as one atomic transaction.
+  ///
+  /// All writes made through this database (collections, indexes, references,
+  /// graph edges) are buffered, visible to point reads inside [body], and
+  /// committed as a single WAL frame. If [body] throws, nothing is applied.
+  ///
+  /// Single writer, no nesting, and scans do not see uncommitted writes.
+  T transactionSync<T>(T Function() body) => _engine.transactionSync(body);
+
+  /// Async facade over [transactionSync].
+  Future<T> transaction<T>(T Function() body) async => transactionSync(body);
 
   @override
   List<String> relationNames() =>

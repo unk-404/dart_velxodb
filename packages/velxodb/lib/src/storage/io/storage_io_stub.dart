@@ -36,6 +36,9 @@ final class LocalStorageDirectory implements SyncStorageDirectory {
   @override
   MappedFile mapSync(String name) => _unsupported();
 
+  @override
+  void closeSync() => _unsupported();
+
   Never _unsupported() => throw UnsupportedError('no local storage on the web');
 }
 

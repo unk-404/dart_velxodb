@@ -61,6 +61,9 @@ final class StorageEngine {
   DocArena _arena;
   final MemTable _memtable = MemTable();
 
+  /// Buffered writes while a transaction is open, coalesced by key.
+  Map<String, WalOp>? _txOps;
+
   final List<SegmentReader> _segments = <SegmentReader>[];
   final List<MappedFile> _segmentMaps = <MappedFile>[];
   final List<SegmentInfo> _segmentInfos = <SegmentInfo>[];
@@ -141,9 +144,15 @@ final class StorageEngine {
   Future<void> open() async => openSync();
 
   /// Inserts or replaces [key] with the encoded [document].
+  ///
+  /// Inside a transaction the write is buffered and applied at commit.
   void putSync(Uint8List key, Bytes document) {
     _checkOpen();
     final bytes = document.asUint8List();
+    if (_txOps != null) {
+      _record(WalOp.put(key, Uint8List.fromList(bytes)));
+      return;
+    }
     _wal.appendPutSync(key, bytes);
     final ref = _arena.append(bytes);
     _memtable.put(key, ref.chunk, ref.offset, ref.length);
@@ -162,12 +171,7 @@ final class StorageEngine {
       for (final entry in entries)
         WalOp.put(entry.key, entry.document.asUint8List()),
     ];
-    _wal.appendBatchSync(ops);
-    for (final entry in entries) {
-      final ref = _arena.append(entry.document.asUint8List());
-      _memtable.put(entry.key, ref.chunk, ref.offset, ref.length);
-    }
-    _afterWrite();
+    applyBatchSync(ops);
   }
 
   /// Async facade over [putManySync].
@@ -176,8 +180,14 @@ final class StorageEngine {
   ) async => putManySync(entries);
 
   /// Deletes [key]. Deleting a missing key is allowed.
+  ///
+  /// Inside a transaction the delete is buffered and applied at commit.
   void deleteSync(Uint8List key) {
     _checkOpen();
+    if (_txOps != null) {
+      _record(WalOp.delete(key));
+      return;
+    }
     _wal.appendDeleteSync(key);
     _memtable.putTombstone(key);
     _afterWrite();
@@ -186,6 +196,42 @@ final class StorageEngine {
   /// Async facade over [deleteSync].
   Future<void> delete(Uint8List key) async => deleteSync(key);
 
+  /// Whether a transaction is currently open.
+  bool get inTransaction => _txOps != null;
+
+  /// Runs [body] as one atomic transaction.
+  ///
+  /// Writes performed through this engine while [body] runs (including writes
+  /// made by [Collection] methods) are buffered, become visible to point reads
+  /// inside the transaction, and are committed as a single WAL frame. If [body]
+  /// throws, nothing is applied.
+  ///
+  /// Limitations: one writer, no nesting, and scans/cursors do not see
+  /// uncommitted writes (point reads do). This is a deliberate, documented
+  /// single-process model, not MVCC.
+  T transactionSync<T>(T Function() body) {
+    _checkOpen();
+    if (_txOps != null) {
+      throw StateError('nested transactions are not supported');
+    }
+    _txOps = <String, WalOp>{};
+    try {
+      final result = body();
+      final ops = _txOps!.values.toList(growable: false);
+      _txOps = null;
+      if (ops.isNotEmpty) _applyBatch(ops);
+      return result;
+    } catch (_) {
+      _txOps = null;
+      rethrow;
+    }
+  }
+
+  void _record(WalOp op) {
+    // Coalesce by key: only the last operation per key reaches the WAL.
+    _txOps![String.fromCharCodes(op.key)] = op;
+  }
+
   /// Applies puts and deletes as one WAL frame.
   ///
   /// A crash either keeps the whole batch or none of it, which is what lets a
@@ -193,6 +239,20 @@ final class StorageEngine {
   void applyBatchSync(List<WalOp> ops) {
     _checkOpen();
     if (ops.isEmpty) return;
+    if (_txOps != null) {
+      for (final op in ops) {
+        _record(
+          op.kind == WalOpKind.put
+              ? WalOp.put(op.key, Uint8List.fromList(op.value!))
+              : WalOp.delete(op.key),
+        );
+      }
+      return;
+    }
+    _applyBatch(ops);
+  }
+
+  void _applyBatch(List<WalOp> ops) {
     _wal.appendBatchSync(ops);
     for (final op in ops) {
       if (op.kind == WalOpKind.put) {
@@ -211,6 +271,15 @@ final class StorageEngine {
   /// the memtable point into the arena. Both stay valid until the next flush.
   Bytes? get(Uint8List key) {
     _checkOpen();
+    final transaction = _txOps;
+    if (transaction != null) {
+      final pending = transaction[String.fromCharCodes(key)];
+      if (pending != null) {
+        if (pending.kind == WalOpKind.delete) return null;
+        final bytes = pending.value!;
+        return Bytes.view(bytes, 0, bytes.length);
+      }
+    }
     final ref = _memtable.get(key);
     if (ref != null) {
       return ref.length < 0 ? null : _arena.view(ref.chunk, ref.offset, ref.length);
@@ -329,9 +398,10 @@ final class StorageEngine {
 
   /// Flushes pending writes and releases every mapped segment.
   ///
-  /// The directory stays owned by the caller. After this call the engine
-  /// refuses reads as well as writes: a mapped segment must not be used after
-  /// it is unmapped.
+  /// Flushes pending writes and releases the directory lock.
+  ///
+  /// After this call the engine refuses reads as well as writes: a mapped
+  /// segment must not be used after it is unmapped.
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
@@ -342,6 +412,7 @@ final class StorageEngine {
     }
     _segmentMaps.clear();
     _segments.clear();
+    _directory.closeSync();
   }
 
   void _afterWrite() {

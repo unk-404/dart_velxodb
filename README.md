@@ -77,6 +77,28 @@ A 200k-document import over the object-store engine issues **412 requests**, a
 120k-change churn issues **123**, and a reopen issues **2** with no segment
 download. The full breakdown is in the benchmark below.
 
+## What the engine guarantees
+
+- **Atomic writes.** One document and every derived entry (secondary indexes,
+  reference indexes, full-text postings, graph edges) commit in a single WAL
+  frame.
+- **Multi-document transactions.** `db.transactionSync` buffers every write,
+  makes it visible to point reads inside the block, and commits the whole set as
+  one frame; an exception applies nothing. Single writer, no nesting, no MVCC —
+  scans do not see uncommitted writes.
+- **Single-writer lock.** Opening the same directory twice fails immediately, so
+  two processes cannot interleave writes into one log.
+- **Crash recovery.** WAL replay, then the manifest as the commit point. A frame
+  torn by a crash is dropped whole; a committed transaction never splits.
+- **Bounded memory.** The memtable auto-flushes at 64 MB by default
+  (`VelxoDatabase.openSync(maxMemtableBytes: ...)`).
+- **Graceful shutdown.** `db.close(flush: true)` writes a segment so the next
+  open reads the manifest instead of replaying the log.
+
+Not yet provided (tracked in `research/productization.md`): durability tiers and
+group commit, an automatic compaction policy, an integrity-check API, typed
+errors, multi-isolate concurrency, and web support.
+
 ## Status
 
 Pre-alpha, usable end to end on the VM.
@@ -109,6 +131,12 @@ final messages = db.collection('messages');
 final key = Uint8List.fromList('m1'.codeUnits);
 messages.putSync(key, encodedDocument);
 final document = messages.getSync(key);
+
+// Multi-document atomicity: one WAL frame, or nothing on throw.
+db.transactionSync(() {
+  messages.putSync(key, editedDocument);
+  users.putSync(userKey, userDocument);
+});
 
 await db.close(flush: true); // graceful shutdown: reopen reads the manifest,
                              // not a full WAL replay

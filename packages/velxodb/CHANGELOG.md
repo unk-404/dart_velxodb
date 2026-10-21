@@ -102,5 +102,12 @@
   engine, maintained in the same WAL frame as the document, backfilled on
   creation, and queried with `any`/`all` modes plus per-hit verification.
   ~482k docs/s on 64 hits (JIT, including verification).
+- Transactions: `db.transactionSync` buffers all writes (collections, indexes,
+  references, graph), makes them visible to point reads, and commits the set as
+  one WAL frame; an exception applies nothing. Single writer, no nesting, no
+  MVCC. Verified with a torn-frame test.
+- Safety defaults: the local directory takes an exclusive `LOCK` (a second open
+  fails), `VelxoDatabase.openSync` auto-flushes at 64 MB by default, and
+  `close(flush: true)` gives a fast graceful reopen.
 - READMEs rewritten (workspace and package).
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).

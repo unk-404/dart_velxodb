@@ -28,6 +28,12 @@ abstract interface class SyncStorageDirectory {
   /// Backends that cannot map (in-memory, web) may return a plain view; the
   /// contract is only that [MappedFile.bytes] stays valid until close.
   MappedFile mapSync(String name);
+
+  /// Releases resources owned by the directory.
+  ///
+  /// The local backend holds an exclusive lock on the database directory and
+  /// releases it here; the in-memory backend has nothing to release.
+  void closeSync();
 }
 
 /// In-memory directory used by tests and benchmarks.
@@ -77,6 +83,9 @@ final class MemoryStorageDirectory implements SyncStorageDirectory {
 
   /// Raw bytes of a file, for assertions.
   Uint8List? bytesOf(String name) => _files[name]?.bytes;
+
+  @override
+  void closeSync() {}
 }
 
 final class _MemoryMappedFile implements MappedFile {

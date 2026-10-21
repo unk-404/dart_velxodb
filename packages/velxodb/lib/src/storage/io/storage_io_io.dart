@@ -11,13 +11,33 @@ import '../file.dart';
 /// This file is only compiled on the VM (see `storage_io.dart`); the web build
 /// gets a stub until the OPFS backend lands.
 final class LocalStorageDirectory implements SyncStorageDirectory {
-  /// Opens (and creates) the directory at [path].
+  /// Opens (and creates) the directory at [path] and takes an exclusive lock.
+  ///
+  /// A second open of the same directory fails fast instead of letting two
+  /// engines corrupt each other's WAL and segments.
   LocalStorageDirectory(String path) : directory = Directory(path) {
     directory.createSync(recursive: true);
+    final lock = File('${directory.path}${Platform.pathSeparator}LOCK');
+    final handle = lock.openSync(mode: FileMode.append);
+    try {
+      handle.lockSync(FileLock.exclusive);
+    } on FileSystemException {
+      handle.closeSync();
+      throw StateError('database is already open: ${directory.path}');
+    }
+    _lock = handle;
   }
 
   /// Root directory.
   final Directory directory;
+
+  RandomAccessFile? _lock;
+
+  @override
+  void closeSync() {
+    _lock?.closeSync();
+    _lock = null;
+  }
 
   @override
   SyncStorageFile openSync(String name, {bool create = true}) {

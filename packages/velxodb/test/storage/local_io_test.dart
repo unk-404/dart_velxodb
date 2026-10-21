@@ -98,4 +98,15 @@ void main() {
 
     await engine.close();
   });
+
+  test('rejects a second concurrent open of the same directory', () {
+    directory.closeSync(); // release the lock held by setUp
+    final path = '${root.path}${Platform.pathSeparator}locked';
+    final first = LocalStorageDirectory(path);
+    expect(() => LocalStorageDirectory(path), throwsStateError);
+    first.closeSync();
+
+    final second = LocalStorageDirectory(path);
+    second.closeSync();
+  });
 }
