@@ -17,6 +17,7 @@ final class ChatMessage {
     required this.createdAt,
     required this.body,
     this.edited,
+    this.priority = 0,
   });
 
   /// id.
@@ -37,8 +38,14 @@ final class ChatMessage {
   /// edited.
   final bool? edited;
 
+  /// priority.
+  final int priority;
+
   /// Schema id written into document headers.
   static const int documentSchemaId = 1;
+
+  /// Schema version written into document headers.
+  static const int documentSchemaVersion = 2;
 
   /// Wire id of `id`.
   static const int _idId = 1;
@@ -52,6 +59,8 @@ final class ChatMessage {
   static const int _bodyId = 5;
   /// Wire id of `edited`.
   static const int _editedId = 6;
+  /// Wire id of `priority`.
+  static const int _priorityId = 7;
 
   /// Primary key bytes for this model.
   static Uint8List keyOf(ChatMessage value) => Uint8List.fromList(utf8.encode(value.id));
@@ -65,6 +74,7 @@ final class ChatMessage {
     builder.putString(_bodyId, value.body);
     final editedValue = value.edited;
     if (editedValue != null) builder.putBool(_editedId, editedValue);
+    builder.putInt(_priorityId, value.priority);
   }
 
   /// Reads a ChatMessage from [view].
@@ -75,6 +85,7 @@ final class ChatMessage {
     createdAt: view.getInt(_createdAtId)!,
     body: view.getString(_bodyId)!,
     edited: view.getBool(_editedId),
+    priority: view.getInt(_priorityId) ?? 0,
   );
 
   /// Creates the secondary indexes declared by this model.
@@ -93,6 +104,7 @@ final class ChatMessage {
       encodeInto,
       decodeFrom,
       schemaId: documentSchemaId,
+      version: documentSchemaVersion,
     );
   }
 }

@@ -102,6 +102,8 @@ final class DocumentSchema<T> {
     required this.fields,
     required this.write,
     required this.read,
+    this.schemaId = 1,
+    this.version = 1,
   });
 
   /// Collection name.
@@ -109,6 +111,12 @@ final class DocumentSchema<T> {
 
   /// Declared fields.
   final List<Field> fields;
+
+  /// Schema id written into document headers.
+  final int schemaId;
+
+  /// Schema version written into document headers.
+  final int version;
 
   /// Writes model fields into a builder.
   final void Function(T value, DocBuilder builder) write;
@@ -118,7 +126,7 @@ final class DocumentSchema<T> {
 
   /// Encodes [value].
   Bytes encode(T value) {
-    final builder = DocBuilder(schemaId: 1);
+    final builder = DocBuilder(schemaId: schemaId, schemaVersion: version);
     write(value, builder);
     return builder.finish();
   }
@@ -143,6 +151,7 @@ final class TypedCollection<T> {
     this.encodeValue,
     this.decodeValue, {
     this.schemaId = 1,
+    this.version = 1,
   });
 
   /// Wraps [collection] with a [DocumentSchema].
@@ -150,6 +159,7 @@ final class TypedCollection<T> {
     this.collection,
     DocumentSchema<T> schema, {
     this.schemaId = 1,
+    this.version = 1,
   }) : encodeValue = ((value, builder) => schema.write(value, builder)),
        decodeValue = schema.read;
 
@@ -165,6 +175,9 @@ final class TypedCollection<T> {
   /// Schema id stored in the document header.
   final int schemaId;
 
+  /// Schema version stored in the document header.
+  final int version;
+
   /// Reads [key], or `null`.
   T? getSync(Uint8List key) {
     final bytes = collection.get(key);
@@ -172,9 +185,12 @@ final class TypedCollection<T> {
     return decodeValue(DocView.parse(bytes.asUint8List()));
   }
 
-  /// Inserts or replaces [key].
+  /// Inserts or replaces [key] at the current schema version.
   void putSync(Uint8List key, T value) {
-    final builder = DocBuilder(schemaId: schemaId);
+    final builder = DocBuilder(
+      schemaId: schemaId,
+      schemaVersion: version,
+    );
     encodeValue(value, builder);
     collection.putSync(key, builder.finish());
   }

@@ -107,5 +107,56 @@ void main() {
       expect(messages.getSync(ChatMessage.keyOf(message(id: 'm1')))?.id, 'm1');
       expect(messages.collection.indexes.keys, containsAll(<int>[2, 3, 4]));
     });
+
+    test('reads documents written by an older version with defaults', () {
+      expect(ChatMessage.documentSchemaVersion, 2);
+      // A version 1 document has fields 1..5 but no priority (7).
+      final old = (DocBuilder(schemaId: 1, schemaVersion: 1)
+            ..putString(1, 'm1')
+            ..putString(2, 'c1')
+            ..putString(3, 'u1')
+            ..putInt(4, 100)
+            ..putString(5, 'from v1'))
+          .finish();
+      final key = ChatMessage.keyOf(message(id: 'm1'));
+      messages.collection.putSync(key, old);
+
+      final decoded = messages.getSync(key)!;
+      expect(decoded.body, 'from v1');
+      expect(decoded.priority, 0);
+    });
+
+    test('migrates old documents and then reads the new field', () {
+      final old = (DocBuilder(schemaId: 1, schemaVersion: 1)
+            ..putString(1, 'm1')
+            ..putString(2, 'c1')
+            ..putString(3, 'u1')
+            ..putInt(4, 100)
+            ..putString(5, 'old'))
+          .finish();
+      final key = ChatMessage.keyOf(message(id: 'm1'));
+      messages.collection.putSync(key, old);
+
+      final report = messages.collection.migrateSync(
+        toVersion: 2,
+        steps: <MigrationStep>[
+          MigrationStep(
+            from: 1,
+            to: 2,
+            apply: (source, out) {
+              copyFields(source, out, toId: 7);
+              out.putInt(7, 5);
+            },
+          ),
+        ],
+      );
+      expect(report.migrated, 1);
+
+      final migrated = messages.getSync(key)!;
+      expect(migrated.priority, 5);
+      expect(migrated.body, 'old');
+      final view = DocView.parse(messages.collection.get(key)!.asUint8List());
+      expect(view.schemaVersion, 2);
+    });
   });
 }

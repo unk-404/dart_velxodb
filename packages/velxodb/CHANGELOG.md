@@ -70,4 +70,9 @@
   schema objects, closures or reflection on the hot path (AOT: decode 366 ns vs
   392 ns through `DocumentSchema`). Generated code is committed as a fixture and
   compiled by the test suite.
+- Schema versions and migrations: documents carry a schema version, generated
+  models declare `documentSchemaVersion` and per-field defaults so a new version
+  can read old documents, and `collection.migrateSync` / `migratePageSync` apply
+  a validated version chain with resumable pages, idempotent re-runs and
+  byte-preserving `copyFields` for unknown fields.
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).

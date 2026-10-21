@@ -27,6 +27,7 @@ final class FieldSpec {
     this.kind, {
     this.indexed = false,
     this.nullable = false,
+    this.defaultValue,
   });
 
   /// Dart property name, also the document field name.
@@ -43,6 +44,12 @@ final class FieldSpec {
 
   /// Whether the field may be null.
   final bool nullable;
+
+  /// Value substituted when an older document does not have this field.
+  ///
+  /// Only meaningful for non-nullable fields; generating a default is what lets
+  /// a new version read documents written by an older one.
+  final Object? defaultValue;
 }
 
 /// Declares a model to generate.
@@ -54,6 +61,7 @@ final class ModelSpec {
     required this.fields,
     required this.keyField,
     this.schemaId = 1,
+    this.version = 1,
   });
 
   /// Generated Dart class name.
@@ -70,6 +78,9 @@ final class ModelSpec {
 
   /// Schema id written into document headers.
   final int schemaId;
+
+  /// Schema version written into document headers.
+  final int version;
 }
 
 /// Generates the Dart source for [spec].
@@ -100,8 +111,13 @@ String generateModel(ModelSpec spec) {
   out.writeln('  /// Creates a ${spec.className}.');
   out.writeln('  const ${spec.className}({');
   for (final field in fields) {
-    final required = !field.nullable;
-    out.writeln('    ${required ? 'required ' : ''}this.${field.name},');
+    if (field.nullable) {
+      out.writeln('    this.${field.name},');
+    } else if (field.defaultValue != null) {
+      out.writeln('    this.${field.name} = ${_literal(field)},');
+    } else {
+      out.writeln('    required this.${field.name},');
+    }
   }
   out.writeln('  });');
   out.writeln();
@@ -112,6 +128,9 @@ String generateModel(ModelSpec spec) {
   }
   out.writeln('  /// Schema id written into document headers.');
   out.writeln('  static const int documentSchemaId = ${spec.schemaId};');
+  out.writeln();
+  out.writeln('  /// Schema version written into document headers.');
+  out.writeln('  static const int documentSchemaVersion = ${spec.version};');
   out.writeln();
   for (final field in fields) {
     out.writeln('  /// Wire id of `${field.name}`.');
@@ -162,9 +181,13 @@ String generateModel(ModelSpec spec) {
       FieldKind.int64 => 'getInt',
       FieldKind.boolean => 'getBool',
     };
-    final bang = field.nullable ? '' : '!';
+    final fallback = field.nullable
+        ? ''
+        : field.defaultValue == null
+        ? '!'
+        : ' ?? ${_literal(field)}';
     out.writeln(
-      '    ${field.name}: view.$getter(_${field.name}Id)$bang,',
+      '    ${field.name}: view.$getter(_${field.name}Id)$fallback,',
     );
   }
   out.writeln('  );');
@@ -196,6 +219,7 @@ String generateModel(ModelSpec spec) {
   out.writeln('      encodeInto,');
   out.writeln('      decodeFrom,');
   out.writeln('      schemaId: documentSchemaId,');
+  out.writeln('      version: documentSchemaVersion,');
   out.writeln('    );');
   out.writeln('  }');
   out.writeln('}');
@@ -216,3 +240,21 @@ String _vxsType(FieldSpec field) => switch (field.kind) {
   FieldKind.int64 => 'VxsType.int64',
   FieldKind.boolean => 'VxsType.boolean',
 };
+
+String _literal(FieldSpec field) {
+  final value = field.defaultValue;
+  if (value == null) {
+    throw ArgumentError('field ${field.name} has no default');
+  }
+  return switch (field.kind) {
+    FieldKind.string => "'${_escape(value as String)}'",
+    FieldKind.int64 => '${value as int}',
+    FieldKind.boolean => value == true ? 'true' : 'false',
+  };
+}
+
+String _escape(String value) => value
+    .replaceAll(r'\', r'\\')
+    .replaceAll("'", r"\'")
+    .replaceAll(r'$', r'\$')
+    .replaceAll('\n', r'\n');

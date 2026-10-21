@@ -13,6 +13,8 @@ export 'src/query/collection.dart' show Collection;
 export 'src/query/cursor.dart' show CollectionCursor;
 export 'src/query/database.dart';
 export 'src/query/index.dart' show IndexCatalog, IndexDefinition;
+export 'src/query/migration.dart'
+    show CollectionMigration, MigrationReport, MigrationStep, copyFields;
 export 'src/query/plan.dart'
     show Predicate, Query, QueryPlan, ScanStrategy;
 export 'src/query/schema.dart'

@@ -525,6 +525,9 @@ final class DocCursor {
   /// Field id of the current entry.
   int get fieldId => _fieldId;
 
+  /// The document buffer this cursor walks, for verbatim copies.
+  Uint8List get bytes => _bytes;
+
   /// Wire type of the current entry.
   int get wireType => _wire;
 
