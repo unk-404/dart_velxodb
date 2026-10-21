@@ -86,4 +86,24 @@ void main() {
     expect((await items.lookupByIndex(2, 'u2')).length, 1);
     await db.close();
   });
+
+  test('web write transactions commit documents and indexes atomically', () async {
+    final root = 'velxodb-tx-${DateTime.now().microsecondsSinceEpoch}';
+    final db = await VelxoWebDatabase.open(root: root);
+    final items = await db.collection('items');
+    await items.createIndex(2, VxsType.string);
+
+    await db.writeTxn((tx) async {
+      await tx.put(items, key('a'), indexedDoc('alpha', 'u1'));
+      await tx.put(items, key('b'), indexedDoc('beta', 'u1'));
+      expect(textOf(await tx.get(items, key('a'))), 'alpha');
+    });
+
+    expect((await items.lookupByIndex(2, 'u1')).length, 2);
+    await db.writeTxn((tx) async {
+      await tx.delete(items, key('a'));
+    });
+    expect((await items.lookupByIndex(2, 'u1')).length, 1);
+    await db.close();
+  });
 }

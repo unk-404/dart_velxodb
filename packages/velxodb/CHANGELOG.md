@@ -186,6 +186,10 @@
   layout as the VM, plus backfill. Index maintenance runs on put/delete and
   lookups verify the document value. Chrome tests cover equality, range, update
   and delete.
+- Web/OPFS transactions: `db.writeTxn` buffers document and index mutations in
+  a `WebTransaction`, reads its own writes, and commits them as one WAL object
+  via `ObjectStoreEngine.applyBatch`. A throw discards the buffer. Chrome tests
+  cover atomic document + index commits and deletes.
 - Single-writer lock now also works on POSIX: an in-process registry of
   canonical paths complements the OS lock, which is process-wide there, so a
   second open inside the same process is rejected on Linux and macOS too.

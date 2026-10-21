@@ -10,6 +10,7 @@ import '../serde/schema.dart';
 import '../serde/view.dart';
 import '../storage/io/opfs_store.dart';
 import '../storage/object_engine.dart';
+import '../storage/wal.dart';
 
 /// One document returned by [WebCollection.scan] and index lookups.
 typedef WebEntry = ({Uint8List key, Bytes value});
@@ -63,6 +64,21 @@ final class VelxoWebDatabase {
   Future<void> flush() async {
     await _engine.flush();
   }
+
+  /// Runs [body] and commits every buffered put/delete as one WAL object.
+  ///
+  /// If [body] throws, nothing is written. Index maintenance is part of the
+  /// same batch. Reads inside [body] see the transaction's own writes.
+  Future<T> writeTxn<T>(Future<T> Function(WebTransaction transaction) body) async {
+    final transaction = WebTransaction._(_engine);
+    final result = await body(transaction);
+    await transaction.commit();
+    return result;
+  }
+
+  /// Alias for [writeTxn].
+  Future<T> transaction<T>(Future<T> Function(WebTransaction transaction) body) =>
+      writeTxn(body);
 
   /// Flushes and closes the engine and the OPFS store.
   Future<void> close({bool flush = true}) async {
@@ -280,5 +296,89 @@ final class WebCollection {
       if (value == null) continue;
       await _engine.delete(definition.entryKey(value, key));
     }
+  }
+}
+
+/// Buffered async transaction over OPFS.
+///
+/// Document and index mutations share one WAL object, so the commit is atomic
+/// at the object store level. Reads see the transaction's own writes.
+final class WebTransaction {
+  WebTransaction._(this._engine) : _ops = <String, WalOp>{};
+
+  final ObjectStoreEngine _engine;
+  final Map<String, WalOp> _ops;
+  bool _committed = false;
+
+  /// Reads [key] from [collection], including buffered writes.
+  Future<Bytes?> get(WebCollection collection, Uint8List key) async {
+    final full = collection._key(key);
+    final pending = _ops[String.fromCharCodes(full)];
+    if (pending != null) {
+      if (pending.kind == WalOpKind.delete) return null;
+      final bytes = pending.value!;
+      return Bytes.view(bytes, 0, bytes.length);
+    }
+    return _engine.get(full);
+  }
+
+  /// Buffers a put and its index maintenance.
+  Future<void> put(
+    WebCollection collection,
+    Uint8List key,
+    Bytes document,
+  ) async {
+    final old = await get(collection, key);
+    if (old != null) _removeIndexes(collection, key, old);
+    final full = collection._key(key);
+    _ops[String.fromCharCodes(full)] = WalOp.put(
+      full,
+      Uint8List.fromList(document.asUint8List()),
+    );
+    _addIndexes(collection, key, document);
+  }
+
+  /// Buffers a delete and its index maintenance.
+  Future<void> delete(WebCollection collection, Uint8List key) async {
+    final old = await get(collection, key);
+    if (old != null) _removeIndexes(collection, key, old);
+    final full = collection._key(key);
+    _ops[String.fromCharCodes(full)] = WalOp.delete(full);
+  }
+
+  /// Writes every buffered operation as one WAL object.
+  Future<void> commit() async {
+    if (_committed) return;
+    _committed = true;
+    await _engine.applyBatch(_ops.values.toList(growable: false));
+  }
+
+  void _addIndexes(WebCollection collection, Uint8List key, Bytes document) {
+    final view = DocView.parse(document.asUint8List());
+    for (final definition in collection._db._catalog.indexes) {
+      if (definition.collectionId != collection._id) continue;
+      final value = definition.readValue(view);
+      if (value == null) continue;
+      _putPosting(definition, value, key);
+    }
+  }
+
+  void _removeIndexes(WebCollection collection, Uint8List key, Bytes document) {
+    final view = DocView.parse(document.asUint8List());
+    for (final definition in collection._db._catalog.indexes) {
+      if (definition.collectionId != collection._id) continue;
+      final value = definition.readValue(view);
+      if (value == null) continue;
+      final posting = definition.entryKey(value, key);
+      _ops[String.fromCharCodes(posting)] = WalOp.delete(posting);
+    }
+  }
+
+  void _putPosting(IndexDefinition definition, Object value, Uint8List key) {
+    final posting = definition.entryKey(value, key);
+    _ops[String.fromCharCodes(posting)] = WalOp.put(
+      posting,
+      WebCollection._empty.asUint8List(),
+    );
   }
 }

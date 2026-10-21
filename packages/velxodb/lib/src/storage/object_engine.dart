@@ -147,6 +147,15 @@ final class ObjectStoreEngine {
     await _appendWal(ops);
   }
 
+  /// Applies puts and deletes as **one** WAL object.
+  ///
+  /// Object stores commit per object, so one object per batch is the transaction
+  /// unit: a crash either leaves the whole batch or none of it.
+  Future<void> applyBatch(List<WalOp> ops) async {
+    if (ops.isEmpty) return;
+    await _appendWal(ops);
+  }
+
   /// Deletes [key].
   Future<void> delete(Uint8List key) async {
     await _appendWal(<WalOp>[WalOp.delete(key)]);
