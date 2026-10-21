@@ -1,6 +1,6 @@
 [render]
 title = "velxodb database vs isar_community"
-subtitle = "tier B · 100k documents · one string index · same machine"
+subtitle = "tier B · 100k docs · one string index · 3 runs median · flush + reopen"
 footer = "local/CI comparison, not a project standard"
 width = 960
 kaomoji = ""
@@ -26,7 +26,7 @@ group = "Document database"
 [[row]]
 group = "Document database"
 id = "db.get"
-label = "20k point reads"
+label = "20k point reads (post-reopen)"
 unit = "reads/s"
 
 [[row]]

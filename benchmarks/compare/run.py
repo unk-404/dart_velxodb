@@ -3,14 +3,21 @@
 Tier A: velxodb storage engine vs sled (raw KV).
 Tier B: velxodb document database vs isar_community (document store + index).
 
-    python .agents/benchmarks/compare/run.py
+Every read/query phase runs after flush + close + reopen on all engines, so no
+side serves from a warm memtable. Each suite runs RUNS times; the reports carry
+the median and the semi-range as the error estimate.
 
-Dart needs `dart pub get` + build_runner output; isar native library at
-compare/dart/bin/libisar.dll on Windows. Rust uses `cargo run --release`.
+    python benchmarks/compare/run.py
+
+Dart needs `dart pub get`; the isar native library must be at
+`benchmarks/compare/dart/bin/libisar.dll` (Windows) or `libisar.so` (Linux).
+Rust uses `cargo run --release`.
 """
 
 import json
+import os
 import shutil
+import statistics
 import subprocess
 import sys
 from pathlib import Path
@@ -19,13 +26,14 @@ ROOT = Path(__file__).resolve().parent
 DART = ROOT / "dart"
 RUST = ROOT / "rust"
 OUT = ROOT / "out"
+RUNS = 3
 
 PHASE_SPECS = {
-    "import": ("Import 100k documents", "docs/s", "higher"),
-    "get": ("20k point reads", "reads/s", "higher"),
+    "import": ("Import 100k values", "docs/s", "higher"),
+    "get": ("20k point reads (post-reopen)", "reads/s", "higher"),
     "range": ("10k key range scan", "keys/s", "higher"),
     "index_eq": ("Indexed equality (1k hits)", "queries/s", "higher"),
-    "index_range": ("Indexed range (10k hits)", "queries/s", "higher"),
+    "index_range": ("Indexed range (12k hits, closed)", "queries/s", "higher"),
     "reopen": ("Reopen + 1k reads", "reads/s", "higher"),
     "disk": ("On-disk size", "MB", "lower"),
 }
@@ -35,7 +43,9 @@ GROUPS = {
         "title": "velxodb engine vs sled",
         "group": "Storage engine (raw KV / 130 B values)",
         "engines": {"velxodb-engine": "velxodb", "sled": "sled (raw KV)"},
-        "phases": ["import", "get", "reopen", "range", "disk"],
+        # engine.range is measured for sled but not charted: velxodb has no
+        # public engine-level KV range cursor yet.
+        "phases": ["import", "reopen", "get", "range", "disk"],
     },
     "db": {
         "title": "velxodb database vs isar",
@@ -43,10 +53,10 @@ GROUPS = {
         "engines": {"velxodb-db": "velxodb", "isar": "isar_community"},
         "phases": [
             "import",
+            "reopen",
             "get",
             "index_eq",
             "index_range",
-            "reopen",
             "disk",
         ],
     },
@@ -112,6 +122,22 @@ def parse(output):
     return rows
 
 
+def median_row(rows):
+    ms = statistics.median(row["ms"] for row in rows)
+    entries = int(statistics.median(row["entries"] for row in rows))
+    byte_length = int(statistics.median(row["bytes"] for row in rows))
+    if len(rows) > 1 and ms > 0:
+        rme = (max(row["ms"] for row in rows) - min(row["ms"] for row in rows)) / 2 / ms * 100
+    else:
+        rme = 0.0
+    return {
+        "ms": ms,
+        "entries": entries,
+        "bytes": byte_length,
+        "rme": rme,
+    }
+
+
 def write_reports(by_engine):
     OUT.mkdir(parents=True, exist_ok=True)
     for group, spec in GROUPS.items():
@@ -125,29 +151,31 @@ def write_reports(by_engine):
                 label, unit, direction = PHASE_SPECS[phase]
                 if phase == "disk":
                     value = row["bytes"] / 1e6
+                    note = f"median of {RUNS} · {value:.1f} MB"
                 else:
                     seconds = max(row["ms"], 0.001) / 1000
                     value = (row["entries"] or 1) / seconds
+                    note = (
+                        f"median of {RUNS} · {row['ms']:.1f} ms for "
+                        f"{row['entries']} ops"
+                    )
                 benchmarks.append(
                     {
                         "id": f"{group}.{phase}",
                         "group": spec["group"],
                         "label": label,
-                        "note": (
-                            f"{row['bytes'] / 1e6:.1f} MB"
-                            if phase == "disk"
-                            else f"{row['ms']:.1f} ms for {row['entries']} ops"
-                        ),
+                        "note": note,
                         "unit": unit,
                         "value": value,
                         "direction": direction,
+                        "stats": {"samples": RUNS, "rme_pct": row["rme"]},
                     }
                 )
             report = {
                 "schema": "benchcat/report@1",
                 "meta": {
                     "tool": "velxo-compare",
-                    "tool_version": "2",
+                    "tool_version": "3",
                     "platform": {"os": "Windows", "arch": "x86_64"},
                 },
                 "benchmarks": benchmarks,
@@ -178,21 +206,26 @@ def print_group(group, by_engine):
 
 
 def main():
-    dll = DART / "bin" / "libisar.dll"
-    if not dll.exists():
-        print(f"warning: {dll} missing; isar will be skipped", file=sys.stderr)
+    isar_lib = DART / "bin" / ("libisar.dll" if os.name == "nt" else "libisar.so")
+    if not isar_lib.exists():
+        print(f"warning: {isar_lib} missing; isar will be skipped", file=sys.stderr)
 
     exe = ensure_aot()
-    rows = []
-    rows += parse(run([str(exe), "engine"], DART))
-    rows += parse(run([str(exe), "db"], DART))
-    if dll.exists():
-        rows += parse(run([str(exe), "isar"], DART))
-    rows += parse(run(["cargo", "run", "--release", "--quiet"], RUST))
+    all_rows = []
+    for _ in range(RUNS):
+        all_rows += parse(run([str(exe), "engine"], DART))
+        all_rows += parse(run([str(exe), "db"], DART))
+        if isar_lib.exists():
+            all_rows += parse(run([str(exe), "isar"], DART))
+        all_rows += parse(run(["cargo", "run", "--release", "--quiet"], RUST))
+
+    grouped = {}
+    for row in all_rows:
+        grouped.setdefault((row["engine"], row["phase"]), []).append(row)
 
     by_engine = {}
-    for row in rows:
-        by_engine.setdefault(row["engine"], {})[row["phase"]] = row
+    for (engine, phase), rows in grouped.items():
+        by_engine.setdefault(engine, {})[phase] = median_row(rows)
 
     write_reports(by_engine)
     print_group("engine", by_engine)

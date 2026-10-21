@@ -13,6 +13,10 @@ const int total = 100000;
 const int batch = 500;
 const int reads = 20000;
 const int reopenReads = 1000;
+const int warmupReads = 1000;
+
+/// Both sides write one 130-byte value per key.
+const int targetValueBytes = 130;
 
 final String body =
     '在吗？今天下午三点开会，别忘了带材料。01J8Z4K2M3N4P5Q6R7S8T9V0W1';
@@ -22,13 +26,22 @@ Uint8List keyOf(int index) =>
 
 String senderOf(int index) => 'u${index % 100}';
 
-Uint8List documentFor(int index) => (DocBuilder(schemaId: 1)
+/// A valid VXS document padded to exactly [targetValueBytes] bytes, so the
+/// sled comparison writes the same payload size.
+Uint8List documentFor(int index) {
+  for (var pad = 0; pad < 96; pad++) {
+    final builder = DocBuilder(schemaId: 1)
       ..putString(1, 'doc-${index.toString().padLeft(9, '0')}')
       ..putString(2, senderOf(index))
       ..putInt(3, 1750000000000)
-      ..putString(4, body))
-    .finish()
-    .asUint8List();
+      ..putString(4, body);
+    if (pad > 0) builder.putBytes(9, List<int>.filled(pad, 0));
+    final bytes = builder.finish().asUint8List();
+    if (bytes.length == targetValueBytes) return bytes;
+    if (bytes.length > targetValueBytes) break;
+  }
+  throw StateError('cannot pad document to $targetValueBytes bytes');
+}
 
 var seed = 0x9E3779B9;
 
@@ -77,8 +90,6 @@ Future<void> runEngine() async {
   final root = tempDir('velxo_engine');
   var directory = LocalStorageDirectory(root.path);
   var engine = StorageEngine(directory: directory)..openSync();
-  // The engine stores VXS documents, not opaque blobs (sled does). Use one
-  // valid 117 B document for every key so both sides write one value per key.
   final value = Bytes.fromUint8List(documentFor(0));
 
   var stopwatch = Stopwatch()..start();
@@ -95,14 +106,7 @@ Future<void> runEngine() async {
     entries: total,
   );
 
-  stopwatch = Stopwatch()..start();
-  var hits = 0;
-  for (var i = 0; i < reads; i++) {
-    if (engine.get(keyOf(nextSeed() % total)) != null) hits++;
-  }
-  emit('velxodb-engine', 'get', stopwatch.elapsedMicroseconds, entries: reads);
-  stdout.writeln('  engine hits=$hits');
-
+  // Everything below runs from the persisted segment, not the memtable.
   engine.flushSync();
   engine.closeSync();
   emit('velxodb-engine', 'disk', 0, bytes: directoryBytes(root));
@@ -119,6 +123,18 @@ Future<void> runEngine() async {
     stopwatch.elapsedMicroseconds,
     entries: reopenReads,
   );
+
+  for (var i = 0; i < warmupReads; i++) {
+    engine.get(keyOf(nextSeed() % total));
+  }
+  stopwatch = Stopwatch()..start();
+  var hits = 0;
+  for (var i = 0; i < reads; i++) {
+    if (engine.get(keyOf(nextSeed() % total)) != null) hits++;
+  }
+  if (hits != reads) throw StateError('engine hits $hits != $reads');
+  emit('velxodb-engine', 'get', stopwatch.elapsedMicroseconds, entries: reads);
+
   engine.closeSync();
   root.deleteSync(recursive: true);
 }
@@ -139,37 +155,6 @@ Future<void> runDatabase() async {
   }
   emit('velxodb-db', 'import', stopwatch.elapsedMicroseconds, entries: total);
 
-  stopwatch = Stopwatch()..start();
-  var hits = 0;
-  for (var i = 0; i < reads; i++) {
-    if (collection.get(keyOf(nextSeed() % total)) != null) hits++;
-  }
-  emit('velxodb-db', 'get', stopwatch.elapsedMicroseconds, entries: reads);
-  stdout.writeln('  db hits=$hits');
-
-  stopwatch = Stopwatch()..start();
-  final equality = collection.findSync(Query(where: Predicate.eq(2, 'u1')));
-  emit(
-    'velxodb-db',
-    'index_eq',
-    stopwatch.elapsedMicroseconds,
-    entries: equality.length,
-  );
-
-  stopwatch = Stopwatch()..start();
-  final range = collection.lookupByIndexRangeSync(
-    2,
-    from: 'u10',
-    to: 'u20',
-    includeTo: true,
-  );
-  emit(
-    'velxodb-db',
-    'index_range',
-    stopwatch.elapsedMicroseconds,
-    entries: range.length,
-  );
-
   db.flushSync();
   await db.close();
   emit('velxodb-db', 'disk', 0, bytes: directoryBytes(root));
@@ -186,6 +171,47 @@ Future<void> runDatabase() async {
     stopwatch.elapsedMicroseconds,
     entries: reopenReads,
   );
+
+  for (var i = 0; i < warmupReads; i++) {
+    collection.get(keyOf(nextSeed() % total));
+  }
+  stopwatch = Stopwatch()..start();
+  var hits = 0;
+  for (var i = 0; i < reads; i++) {
+    if (collection.get(keyOf(nextSeed() % total)) != null) hits++;
+  }
+  if (hits != reads) throw StateError('db hits $hits != $reads');
+  emit('velxodb-db', 'get', stopwatch.elapsedMicroseconds, entries: reads);
+
+  stopwatch = Stopwatch()..start();
+  final equality = collection.findSync(Query(where: Predicate.eq(2, 'u1')));
+  if (equality.length != 1000) {
+    throw StateError('db equality ${equality.length} != 1000');
+  }
+  emit(
+    'velxodb-db',
+    'index_eq',
+    stopwatch.elapsedMicroseconds,
+    entries: equality.length,
+  );
+
+  stopwatch = Stopwatch()..start();
+  final range = collection.lookupByIndexRangeSync(
+    2,
+    from: 'u10',
+    to: 'u20',
+    includeTo: true,
+  );
+  if (range.length != 12000) {
+    throw StateError('db range ${range.length} != 12000');
+  }
+  emit(
+    'velxodb-db',
+    'index_range',
+    stopwatch.elapsedMicroseconds,
+    entries: range.length,
+  );
+
   await db.close(flush: true);
   root.deleteSync(recursive: true);
 }
@@ -199,48 +225,18 @@ Future<void> runIsar() async {
   var stopwatch = Stopwatch()..start();
   for (var offset = 0; offset < total; offset += batch) {
     final end = (offset + batch > total) ? total : offset + batch;
-    await isar.writeTxn(() async {
-      for (var i = offset; i < end; i++) {
-        await isar.docs.put(
+    isar.writeTxnSync(() {
+      isar.docs.putAllSync(<Doc>[
+        for (var i = offset; i < end; i++)
           Doc()
             ..id = i + 1
             ..sender = senderOf(i)
             ..createdAt = 1750000000000
             ..body = body,
-        );
-      }
+      ]);
     });
   }
   emit('isar', 'import', stopwatch.elapsedMicroseconds, entries: total);
-
-  stopwatch = Stopwatch()..start();
-  var hits = 0;
-  for (var i = 0; i < reads; i++) {
-    if (await isar.docs.get((nextSeed() % total) + 1) != null) hits++;
-  }
-  emit('isar', 'get', stopwatch.elapsedMicroseconds, entries: reads);
-  stdout.writeln('  isar hits=$hits');
-
-  stopwatch = Stopwatch()..start();
-  final equality = await isar.docs.filter().senderEqualTo('u1').findAll();
-  emit(
-    'isar',
-    'index_eq',
-    stopwatch.elapsedMicroseconds,
-    entries: equality.length,
-  );
-
-  stopwatch = Stopwatch()..start();
-  final range = await isar.docs
-      .filter()
-      .senderBetween('u10', 'u20')
-      .findAll();
-  emit(
-    'isar',
-    'index_range',
-    stopwatch.elapsedMicroseconds,
-    entries: range.length,
-  );
 
   await isar.close();
   emit('isar', 'disk', 0, bytes: directoryBytes(root));
@@ -249,9 +245,48 @@ Future<void> runIsar() async {
       directory: root.path);
   stopwatch = Stopwatch()..start();
   for (var i = 0; i < reopenReads; i++) {
-    await isar.docs.get((nextSeed() % total) + 1);
+    isar.docs.getSync((nextSeed() % total) + 1);
   }
   emit('isar', 'reopen', stopwatch.elapsedMicroseconds, entries: reopenReads);
+
+  for (var i = 0; i < warmupReads; i++) {
+    isar.docs.getSync((nextSeed() % total) + 1);
+  }
+  stopwatch = Stopwatch()..start();
+  var hits = 0;
+  for (var i = 0; i < reads; i++) {
+    if (isar.docs.getSync((nextSeed() % total) + 1) != null) hits++;
+  }
+  if (hits != reads) throw StateError('isar hits $hits != $reads');
+  emit('isar', 'get', stopwatch.elapsedMicroseconds, entries: reads);
+
+  stopwatch = Stopwatch()..start();
+  final equality = isar.docs.filter().senderEqualTo('u1').findAllSync();
+  if (equality.length != 1000) {
+    throw StateError('isar equality ${equality.length} != 1000');
+  }
+  emit(
+    'isar',
+    'index_eq',
+    stopwatch.elapsedMicroseconds,
+    entries: equality.length,
+  );
+
+  stopwatch = Stopwatch()..start();
+  final range = isar.docs
+      .filter()
+      .senderBetween('u10', 'u20')
+      .findAllSync();
+  if (range.length != 12000) {
+    throw StateError('isar range ${range.length} != 12000');
+  }
+  emit(
+    'isar',
+    'index_range',
+    stopwatch.elapsedMicroseconds,
+    entries: range.length,
+  );
+
   await isar.close(deleteFromDisk: true);
   root.deleteSync(recursive: true);
 }

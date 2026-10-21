@@ -29,21 +29,36 @@ benchcat render --config benchmarks/compare/benchcat-db.toml \
 
 CI does exactly this on Linux and commits the two SVGs on `main`.
 
+## Methodology
+
+- Every import is written with the engine's synchronous batch API
+  (`putManySync`, `writeTxnSync` + `putAllSync`, `apply_batch`).
+- Every read/query phase runs after flush + close + reopen, so no engine serves
+  from a warm memtable; a 1k-read warm-up precedes the timed reads.
+- 3 runs per suite; reports carry the median and the semi-range (`rme_pct`).
+- Tier A writes the same 130-byte value for velxodb and sled.
+- Result sets are verified: equality returns 1,000 rows, the closed range
+  12,000 rows; the harness throws otherwise.
+
 ## Caveats (deliberately visible)
 
-- **The engine stores VXS documents.** `StorageEngine.get` returns a parsed
-  document, so tier A writes valid VXS values; sled accepts opaque bytes. This
-  is an abstraction difference, not a trick.
+- **The engine stores VXS documents.** `StorageEngine.get` parses the document,
+  so tier A writes valid VXS values; sled accepts opaque bytes. This is an
+  abstraction difference, not a trick.
 - **No engine-level KV range.** Tier A therefore measures no range row for
   velxodb. sled's 10k-key range is reported in the run output but not charted.
 - **Closed ranges.** isar 3.4.1 returns zero rows for an exclusive-upper string
   `senderBetween(..., includeUpper: false)`; both sides use a closed range
   (`u10..u20`, 12k hits) so the hit counts match.
-- **Single run, no cache flush.** Compare deltas, not absolute numbers.
+- **OS page cache is warm.** The systems are reopened but caches are not
+  dropped; this is a post-reopen comparison, not a cold-start one.
+- **Return types differ.** velxodb returns zero-copy bytes/views; isar
+  materializes `Doc` objects. That is a design advantage, not a hidden shortcut.
 - **Dart AOT vs native.** The Dart harness is compiled AOT; isar is its native
   library, sled is a release build.
 
 ## CI
 
 The `compare` job in `.github/workflows/ci.yml` downloads the isar Linux core,
-runs both suites, renders both cards and uploads/commits them.
+runs both suites, renders both cards and uploads them; the `assets` job commits
+all charts to `main`.

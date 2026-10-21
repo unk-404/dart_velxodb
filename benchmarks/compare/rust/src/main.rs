@@ -4,6 +4,7 @@ use std::time::Instant;
 const TOTAL: usize = 100_000;
 const READS: usize = 20_000;
 const REOPEN_READS: usize = 1_000;
+const WARMUP_READS: usize = 1_000;
 const BATCH: usize = 500;
 const RANGE_START: usize = 10_000;
 const RANGE_END: usize = 20_000;
@@ -77,6 +78,22 @@ fn main() {
     }
     emit("sled", "import", start.elapsed().as_micros(), TOTAL);
 
+    // Persist before every read/query phase, matching velxodb's flush+reopen.
+    db.flush().unwrap();
+    drop(db);
+    emit_disk("sled", directory_bytes(&dir));
+
+    let start = Instant::now();
+    let db = sled::open(&dir).unwrap();
+    for _ in 0..REOPEN_READS {
+        let _ = db.get(key(next() % TOTAL).as_bytes());
+    }
+    emit("sled", "reopen", start.elapsed().as_micros(), REOPEN_READS);
+
+    for _ in 0..WARMUP_READS {
+        let _ = db.get(key(next() % TOTAL).as_bytes());
+    }
+
     let start = Instant::now();
     let mut hits = 0;
     for _ in 0..READS {
@@ -84,8 +101,10 @@ fn main() {
             hits += 1;
         }
     }
+    if hits != READS {
+        panic!("sled hits {} != {}", hits, READS);
+    }
     emit("sled", "get", start.elapsed().as_micros(), READS);
-    eprintln!("  sled hits={}", hits);
 
     let start = Instant::now();
     let mut count = 0;
@@ -94,18 +113,11 @@ fn main() {
             count += 1;
         }
     }
-    emit("sled", "range", start.elapsed().as_micros(), count);
-    eprintln!("  sled range={}", count);
-
-    let start = Instant::now();
-    drop(db);
-    let db = sled::open(&dir).unwrap();
-    for _ in 0..REOPEN_READS {
-        let _ = db.get(key(next() % TOTAL).as_bytes());
+    if count != RANGE_END - RANGE_START {
+        panic!("sled range {} != {}", count, RANGE_END - RANGE_START);
     }
-    emit("sled", "reopen", start.elapsed().as_micros(), REOPEN_READS);
+    emit("sled", "range", start.elapsed().as_micros(), count);
 
     drop(db);
-    emit_disk("sled", directory_bytes(&dir));
     std::fs::remove_dir_all(&dir).ok();
 }

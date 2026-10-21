@@ -1,6 +1,6 @@
 [render]
 title = "velxodb engine vs sled"
-subtitle = "tier A · raw KV · 100k × 130 B · same machine"
+subtitle = "tier A · 100k × 130 B · 3 runs median · flush + reopen before reads"
 footer = "local/CI comparison, not a project standard"
 width = 960
 kaomoji = ""

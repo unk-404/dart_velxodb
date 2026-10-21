@@ -240,56 +240,70 @@ Local run (needs the isar native library and Rust):
 cd benchmarks/compare && python run.py
 ```
 
-Single-run, no cache flush, AOT Dart / native isar / release sled, Windows x64:
+Median of 3 runs, AOT Dart / native isar / release sled, Windows x64. Every
+read/query phase runs after flush + close + reopen, so no engine serves from a
+warm memtable:
 
 | Tier | Result |
 | --- | --- |
-| Engine import | 108 ms / 100k (925k docs/s) vs sled 272 ms (367k docs/s) |
-| Engine point reads | 7.3 ms / 20k (2.75M reads/s) vs sled 54 ms (372k reads/s) |
-| Engine reopen + 1k reads | 2.2 ms vs sled 457 ms |
-| Engine range scan | sled 2.4 ms / 10k (4.1M keys/s); velxodb has no engine-level cursor |
-| Engine disk | 14.1 MB vs sled 66.5 MB |
-| DB import + index | 1.22 s / 100k (82k docs/s) vs isar 2.40 s (42k docs/s) |
-| DB point reads | 9.4 ms / 20k (2.1M reads/s) vs isar 570 ms (35k reads/s) |
-| DB indexed equality | 0.8 ms / 1k (1.2M q/s) vs isar 5.0 ms (200k q/s) |
-| DB indexed range | 6.7 ms / 12k (1.8M q/s) vs isar 12.2 ms (986k q/s) |
-| DB reopen + 1k reads | 2.6 ms vs isar 46.9 ms |
-| DB disk | 18.1 MB vs isar 26.2 MB |
+| Engine import | 98.6 ms / 100k (1.01M docs/s) vs sled 284.5 ms (351k docs/s) |
+| Engine point reads | 18.8 ms / 20k (1.06M reads/s) vs sled 162 ms (123k reads/s) |
+| Engine reopen + 1k reads | 2.2 ms vs sled 87.3 ms |
+| Engine range scan | sled 2.6 ms / 10k (3.84M keys/s); velxodb has no engine-level cursor |
+| Engine disk | 15.4 MB vs sled 63.4 MB |
+| DB import + index | 1.59 s / 100k (63k docs/s) vs isar 2.05 s (49k docs/s) |
+| DB point reads | 23.9 ms / 20k (838k reads/s) vs isar 55.4 ms (361k reads/s) |
+| DB indexed equality | 1.4 ms / 1k (704k q/s) vs isar 4.6 ms (220k q/s) |
+| DB indexed range | 12.9 ms / 12k (932k q/s) vs isar 8.0 ms (**1.49M q/s**) |
+| DB reopen + 1k reads | 2.8 ms vs isar 4.0 ms |
+| DB disk | 19.3 MB vs isar 26.2 MB |
 
 Where velxodb loses, stated plainly:
 
-- **No engine-level KV range cursor.** sled scans 10k keys in 2.4 ms; our
+- **Indexed range.** isar answers a 12k-hit string range in 8.0 ms; velxodb
+  takes 12.9 ms. We win equality, lose range.
+- **No engine-level KV range cursor.** sled scans 10k keys in 2.6 ms; our
   collection cursor exists, but `StorageEngine` does not expose a public raw
   range API. The row is sled-only on purpose.
 - **The engine stores VXS documents, not opaque blobs.** sled accepts arbitrary
   bytes; our lower layer validates the document format. That is a higher-level
   abstraction, not a benchmark trick.
-- **Space is traded for write speed.** sled preallocates and logs; we keep 14 MB
-  where sled uses 66 MB for the same keys.
 - **Concurrency.** isar supports multi-isolate/MVCC access; velxodb is
   single-writer, single-isolate today.
+- **Ecosystem.** isar and sled have years of production hardening; this engine
+  is young, and the crash-point matrix is not in CI yet.
 
 ### How fair are these numbers?
 
-They are real harness output, but not every row is a same-condition comparison:
+- **Same API class on both sides.** velxodb uses `putManySync` / `get` /
+  `findSync`; isar uses `writeTxnSync` + `putAllSync` / `getSync` /
+  `findAllSync`; sled uses `apply_batch` / `get` / `range`. No async API is used
+  for one side and sync for the other.
+- **Persisted before every read/query.** Every engine is flushed and closed,
+  then reopened; reads and index queries run from storage, not from a memtable.
+  A 1k-read warm-up runs before the timed 20k reads on every side.
+- **Same payload size in tier A**: 130-byte values for velxodb and sled.
+- **Same result sets, checked.** Equality must return exactly 1,000 rows and
+  the closed range exactly 12,000 rows on both engines; the harness throws if
+  not.
+- **Medians with spread.** 3 runs; `run.py` records the semi-range as
+  `rme_pct` in each report.
+- **All input and code are in this repository** (`benchmarks/compare`), so the
+  methodology can be audited and reproduced.
 
-- **velxodb read/query phases run before a flush.** They read the mutable
-  memtable (open-addressed hash table), while isar and sled serve through their
-  storage engines. This inflates velxodb's read and index-query lead.
-- **isar import uses one awaited `put` per document**, not `putAll`; that adds
-  100k async round-trips to its import number.
-- **Return types differ.** velxodb returns zero-copy bytes/views; isar
-  materializes `Doc` objects. Part of the query gap is API semantics.
-- **Single run, warm cache, no cold-read phase.** The comparison suite is not a
-  statistical benchmark.
-- **Closed ranges on both sides** (12k hits), because isar 3.4.1 returns zero
-  rows for an exclusive-upper string range.
-- **Engine values differ slightly**: 117 B VXS documents vs sled's 130 B blobs.
+Remaining differences that are legitimate design choices, not cheating:
 
-The honest reading: velxodb's zero-copy format, batching and simple memtable are
-fast on this path, but the current cards overstate the margin. The next harness
-revision flushes and reopens before read phases, uses `putAll` for isar and adds
-cold reads; the charts will be regenerated then.
+- velxodb returns zero-copy bytes/views; isar materializes `Doc` objects. That
+  is an API/format advantage of the design, but it means query throughput is not
+  purely "engine speed".
+- isar and sled use their own record encodings; byte-for-byte disk layout is
+  not comparable, only logical workload and result sets are.
+- Closed ranges are used on both sides because isar 3.4.1 returns zero rows for
+  an exclusive-upper string range; this is disclosed rather than hidden.
+
+Still not measured: cold reads with dropped OS caches, RSS, crash recovery
+time, and concurrent/multi-isolate throughput. The cards are a same-workload,
+same-machine, post-reopen comparison, not a universal ranking.
 
 Object-store engine, simulated with request/byte accounting:
 
