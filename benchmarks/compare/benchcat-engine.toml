@@ -1,0 +1,49 @@
+[render]
+title = "velxodb engine vs sled"
+subtitle = "tier A · raw KV · 100k × 130 B · same machine"
+footer = "local/CI comparison, not a project standard"
+width = 960
+kaomoji = ""
+
+[[series]]
+label = "velxodb engine"
+input = "benchmarks/compare/out/engine-velxodb-engine.json"
+format = "json"
+color = "#5B8FF9"
+
+[[series]]
+label = "sled 0.34"
+input = "benchmarks/compare/out/engine-sled.json"
+format = "json"
+color = "#F6BD16"
+
+[[row]]
+id = "engine.import"
+label = "Import 100k values"
+unit = "docs/s"
+group = "Raw key/value"
+
+[[row]]
+group = "Raw key/value"
+id = "engine.get"
+label = "20k point reads"
+unit = "reads/s"
+
+[[row]]
+group = "Raw key/value"
+id = "engine.reopen"
+label = "Reopen + 1k reads"
+unit = "reads/s"
+
+[[row]]
+group = "Raw key/value"
+id = "engine.range"
+label = "10k key range scan"
+note = "velxodb engine has no public KV range cursor yet"
+unit = "keys/s"
+
+[[row]]
+group = "Raw key/value"
+id = "engine.disk"
+label = "On-disk size"
+unit = "MB"

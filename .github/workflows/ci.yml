@@ -89,18 +89,70 @@ jobs:
       - name: Resolve workspace
         run: dart pub get
       - name: Run benchmarks
-        working-directory: packages/velxodb
-        run: dart run benchmark_test --output jsonl benchmark > "$GITHUB_WORKSPACE/bench.jsonl"
+        working-directory: benchmarks
+        run: dart run benchmark_test --output jsonl . > "$GITHUB_WORKSPACE/bench.jsonl"
       - name: Render chart
         uses: unk-404/benchcat@master
         with:
           input: bench.jsonl
           format: benchmark_test
           out: assets/benchmarks.svg
-          config: benchcat.toml
+          config: benchmarks/benchcat.toml
       - name: Upload chart
         uses: actions/upload-artifact@v4
         with:
           name: benchmarks-svg
           path: assets/benchmarks.svg
           if-no-files-found: error
+
+  compare:
+    name: compare / isar + sled
+    needs: [test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve workspace
+        run: dart pub get
+      - name: Resolve comparison harness
+        working-directory: benchmarks/compare/dart
+        run: dart pub get
+      - name: Fetch isar core (Linux)
+        run: |
+          mkdir -p benchmarks/compare/dart/bin
+          curl -fsSL https://binaries.isar-community.dev/3.4.1/libisar_linux_x64.so \
+            -o benchmarks/compare/dart/bin/libisar.so
+      - name: Run comparison suites
+        run: python3 benchmarks/compare/run.py
+      - name: Render engine chart
+        uses: unk-404/benchcat@master
+        with:
+          config: benchmarks/compare/benchcat-engine.toml
+          out: assets/benchmarks-engine.svg
+      - name: Render database chart
+        uses: unk-404/benchcat@master
+        with:
+          config: benchmarks/compare/benchcat-db.toml
+          out: assets/benchmarks-db.svg
+      - name: Upload comparison charts
+        uses: actions/upload-artifact@v4
+        with:
+          name: compare-svg
+          path: |
+            assets/benchmarks-engine.svg
+            assets/benchmarks-db.svg
+          if-no-files-found: error
+      - name: Commit comparison charts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/benchmarks-engine.svg assets/benchmarks-db.svg
+          git diff --cached --quiet && exit 0
+          git commit -m "chore(bench): refresh comparison charts [skip ci]"
+          git push

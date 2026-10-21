@@ -8,6 +8,7 @@ environment:
 workspace:
   - packages/velxodb
   - packages/velxodb_generator
+  - benchmarks
 
 dev_dependencies:
   lints: ^6.0.0

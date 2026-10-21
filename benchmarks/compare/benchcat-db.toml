@@ -1,0 +1,54 @@
+[render]
+title = "velxodb database vs isar_community"
+subtitle = "tier B · 100k documents · one string index · same machine"
+footer = "local/CI comparison, not a project standard"
+width = 960
+kaomoji = ""
+
+[[series]]
+label = "velxodb"
+input = "benchmarks/compare/out/db-velxodb-db.json"
+format = "json"
+color = "#5B8FF9"
+
+[[series]]
+label = "isar_community 3.4.1"
+input = "benchmarks/compare/out/db-isar.json"
+format = "json"
+color = "#61DDAA"
+
+[[row]]
+id = "db.import"
+label = "Import 100k indexed documents"
+unit = "docs/s"
+group = "Document database"
+
+[[row]]
+group = "Document database"
+id = "db.get"
+label = "20k point reads"
+unit = "reads/s"
+
+[[row]]
+group = "Document database"
+id = "db.index_eq"
+label = "Indexed equality (1k hits)"
+unit = "queries/s"
+
+[[row]]
+group = "Document database"
+id = "db.index_range"
+label = "Indexed range (12k hits, closed)"
+unit = "queries/s"
+
+[[row]]
+group = "Document database"
+id = "db.reopen"
+label = "Reopen + 1k reads"
+unit = "reads/s"
+
+[[row]]
+group = "Document database"
+id = "db.disk"
+label = "On-disk size"
+unit = "MB"

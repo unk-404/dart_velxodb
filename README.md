@@ -212,29 +212,62 @@ collection.migrateSync(toVersion: 2, steps: [
 
 ## Benchmarks
 
-Local chart (JIT snapshot, for orientation; CI renders the official chart):
+Everything lives under `benchmarks/`. The main suite (CI renders
+`assets/benchmarks.svg`):
 
 ```sh
-cd packages/velxodb
-dart run benchmark_test --output jsonl benchmark > ../../bench.jsonl
-python ../../.agents/tools/render_bench.py ../../bench.jsonl ../../.agents/benchmarks/benchmarks.png
+cd benchmarks
+dart run benchmark_test --output jsonl . > ../bench.jsonl
 ```
 
-AOT numbers from the local engine:
+The comparison suite has two cards, one per abstraction layer:
 
-| Workload | Result |
+- **`assets/benchmarks-engine.svg`** — velxodb **storage engine** vs sled:
+  both are raw key/value engines writing one 130-byte value per key.
+- **`assets/benchmarks-db.svg`** — velxodb **document database** vs
+  isar_community: both write 100k documents with one string index and query it
+  the same way.
+
+Local run (needs the isar native library and Rust):
+
+```sh
+cd benchmarks/compare && python run.py
+```
+
+Single-run, no cache flush, AOT Dart / native isar / release sled, Windows x64:
+
+| Tier | Result |
 | --- | --- |
-| VXS encode, 130 B chat doc | ~550 MB/s |
-| Engine point read (memtable) | ~18M ops/s |
-| 1e6 docs, real files | 355k docs/s import, 38 ms reopen, p50 1.5 µs, 1.21x disk |
-| Secondary index write | ~1.7M ops/s |
-| Index lookup / range | ~2.7M / ~3.0M ops/s |
-| Graph link / adjacency | ~1.9M / ~1.2M ops/s |
+| Engine import | 108 ms / 100k (925k docs/s) vs sled 272 ms (367k docs/s) |
+| Engine point reads | 7.3 ms / 20k (2.75M reads/s) vs sled 54 ms (372k reads/s) |
+| Engine reopen + 1k reads | 2.2 ms vs sled 457 ms |
+| Engine range scan | sled 2.4 ms / 10k (4.1M keys/s); velxodb has no engine-level cursor |
+| Engine disk | 14.1 MB vs sled 66.5 MB |
+| DB import + index | 1.22 s / 100k (82k docs/s) vs isar 2.40 s (42k docs/s) |
+| DB point reads | 9.4 ms / 20k (2.1M reads/s) vs isar 570 ms (35k reads/s) |
+| DB indexed equality | 0.8 ms / 1k (1.2M q/s) vs isar 5.0 ms (200k q/s) |
+| DB indexed range | 6.7 ms / 12k (1.8M q/s) vs isar 12.2 ms (986k q/s) |
+| DB reopen + 1k reads | 2.6 ms vs isar 46.9 ms |
+| DB disk | 18.1 MB vs isar 26.2 MB |
+
+Where velxodb loses, stated plainly:
+
+- **No engine-level KV range cursor.** sled scans 10k keys in 2.4 ms; our
+  collection cursor exists, but `StorageEngine` does not expose a public raw
+  range API. The row is sled-only on purpose.
+- **The engine stores VXS documents, not opaque blobs.** sled accepts arbitrary
+  bytes; our lower layer validates the document format. That is a higher-level
+  abstraction, not a benchmark trick.
+- **Space is traded for write speed.** sled preallocates and logs; we keep 14 MB
+  where sled uses 66 MB for the same keys.
+- **Concurrency.** isar supports multi-isolate/MVCC access; velxodb is
+  single-writer, single-isolate today.
 
 Object-store engine, simulated with request/byte accounting:
 
 ```sh
-dart run benchmark/object_store_bench.dart
+cd benchmarks
+dart run object_store_bench.dart
 ```
 
 ```
@@ -267,6 +300,26 @@ reopen                            0ms          2 (1/0/0/1)      0.0MB      0.0MB
   cursor; global graph walks are opt-in and documented as O(nodes × relations).
 - **I/O stays at the edge.** The format and the engine are tested without a
   filesystem; backends are interchangeable and small.
+
+## Roadmap
+
+Already shipped: VXS format, WAL + segments + mmap, query layer, secondary
+indexes, typed collections, references, graph, full-text, object-store engine,
+transactions, single-writer lock, durability tiers, auto-flush, auto-compaction,
+integrity check and typed errors.
+
+Remaining, in order:
+
+1. **Crash-point matrix in CI** — cut power at every WAL/segment/manifest commit
+   point, reopen, assert the invariants.
+2. **Concurrency model** — an isolate worker (one writer, many readers) or an
+   explicit single-isolate contract with a background flush/compaction thread.
+3. **Backup / restore** and read-only opens.
+4. **Engine-level KV range cursor**, so the storage tier has the same API surface
+   as sled.
+5. **Web storage** (OPFS in a worker) instead of the current stub.
+6. **Mongo-style facade** over the existing query layer.
+7. **Docs site and runnable examples**, plus long-running stress/fuzz jobs.
 
 ## License
 

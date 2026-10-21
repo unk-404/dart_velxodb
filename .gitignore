@@ -13,3 +13,11 @@ bench.jsonl
 *.exe
 bench_out.txt
 *.log
+
+# comparison harness build/runtime output
+benchmarks/compare/out/
+benchmarks/compare/dart/.tmp/
+benchmarks/compare/dart/bin/libisar.*
+benchmarks/compare/rust/target/
+benchmarks/compare/rust/sled_db/
+benchmarks/compare/dart/.dart_tool/

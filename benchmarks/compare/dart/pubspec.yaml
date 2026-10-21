@@ -1,0 +1,12 @@
+name: velxodb_compare
+description: Local and CI comparison harness (velxodb vs isar_community).
+publish_to: none
+
+environment:
+  sdk: ^3.13.5
+
+dependencies:
+  blit: ^0.1.6
+  velxodb:
+    path: ../../../packages/velxodb
+  isar_community: ^3.4.1
