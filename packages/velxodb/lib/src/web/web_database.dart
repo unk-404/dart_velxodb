@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:blit/blit.dart';
@@ -5,6 +6,7 @@ import 'package:blit/blit.dart';
 import '../errors.dart';
 import '../query/catalog.dart';
 import '../query/index.dart';
+import '../query/reference.dart';
 import '../serde/builder.dart';
 import '../serde/schema.dart';
 import '../serde/view.dart';
@@ -59,6 +61,18 @@ final class VelxoWebDatabase {
 
   Future<void> _saveCatalog() =>
       _store.put('${_engine.prefix}CATALOG', _catalog.encode());
+
+  WebCollection? _collectionById(int id) {
+    for (final entry in _catalog.entries) {
+      if (entry.id == id) {
+        return _collections.putIfAbsent(
+          entry.name,
+          () => WebCollection._(this, _engine, id),
+        );
+      }
+    }
+    return null;
+  }
 
   /// Flushes the memtable into an object-store segment.
   Future<void> flush() async {
@@ -128,15 +142,96 @@ final class WebCollection {
   Future<void> put(Uint8List key, Bytes document) async {
     final old = await get(key);
     if (old != null) await _removeIndexes(key, old);
+    await _validateReferences(document);
     await _engine.put(_key(key), document);
     await _addIndexes(key, document);
   }
 
-  /// Deletes one document and its index entries.
+  /// Deletes one document, checking/cascading references first.
   Future<void> delete(Uint8List key) async {
     final old = await get(key);
-    if (old != null) await _removeIndexes(key, old);
+    if (old != null) {
+      await _handleReferrers(key);
+      await _removeIndexes(key, old);
+    }
     await _engine.delete(_key(key));
+  }
+
+  /// Binds [fieldId] to [targetName] and indexes the field.
+  Future<ReferenceDefinition> createReference(
+    int fieldId,
+    String targetName, {
+    OnDelete onDelete = OnDelete.restrict,
+  }) async {
+    final targetId = _db._catalog.idOf(targetName);
+    if (targetId == null) {
+      throw VelxoNotFoundException(
+        'target collection "$targetName" does not exist',
+      );
+    }
+    _db._catalog = _db._catalog.withReference(
+      _id,
+      fieldId,
+      targetId,
+      onDelete,
+    );
+    await _db._saveCatalog();
+    await createIndex(fieldId, VxsType.string);
+    return _db._catalog.referenceFor(_id, fieldId)!;
+  }
+
+  Future<void> _validateReferences(Bytes document) async {
+    final view = DocView.parse(document.asUint8List());
+    for (final reference in _db._catalog.references) {
+      if (reference.sourceCollectionId != _id) continue;
+      final value = view.getString(reference.fieldId);
+      if (value == null) continue;
+      final targetKey = Uint8List.fromList(utf8.encode(value));
+      final target = await _engine.get(
+        WebCollection._compose(reference.targetCollectionId, targetKey),
+      );
+      if (target == null) {
+        throw StateError(
+          'missing referenced document "$value" in collection '
+          '${reference.targetCollectionId} (field ${reference.fieldId})',
+        );
+      }
+    }
+  }
+
+  Future<void> _handleReferrers(Uint8List key) async {
+    final targetKey = utf8.decode(key);
+    for (final reference in _db._catalog.references) {
+      if (reference.targetCollectionId != _id) continue;
+      final source = _db._collectionById(reference.sourceCollectionId);
+      if (source == null) continue;
+      final referrers = await source.lookupByIndex(
+        reference.fieldId,
+        targetKey,
+      );
+      if (referrers.isEmpty) continue;
+      switch (reference.onDelete) {
+        case OnDelete.restrict:
+          throw StateError(
+            'cannot delete document: ${referrers.length} document(s) still '
+            'reference it through field ${reference.fieldId}',
+          );
+        case OnDelete.cascade:
+          for (final entry in referrers) {
+            await source.delete(entry.key);
+          }
+        case OnDelete.setNull:
+          throw UnsupportedError('OnDelete.setNull is not implemented');
+      }
+    }
+  }
+
+  static Uint8List _compose(int collectionId, Uint8List key) {
+    final out = Uint8List(2 + key.length);
+    out[0] = (collectionId >> 8) & 0xFF;
+    out[1] = collectionId & 0xFF;
+    out.setRange(2, out.length, key);
+    return out;
   }
 
   /// Scans the collection in key order.

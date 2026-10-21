@@ -190,6 +190,10 @@
   a `WebTransaction`, reads its own writes, and commits them as one WAL object
   via `ObjectStoreEngine.applyBatch`. A throw discards the buffer. Chrome tests
   cover atomic document + index commits and deletes.
+- Web/OPFS references: `createReference` binds a field to a target collection,
+  indexes it, validates targets on put and enforces `restrict`/`cascade` on
+  delete by reverse index lookup. Chrome tests cover a missing target, restrict
+  and cascade.
 - Single-writer lock now also works on POSIX: an in-process registry of
   canonical paths complements the OS lock, which is process-wide there, so a
   second open inside the same process is rejected on Linux and macOS too.

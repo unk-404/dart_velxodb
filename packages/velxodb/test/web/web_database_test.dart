@@ -106,4 +106,42 @@ void main() {
     expect((await items.lookupByIndex(2, 'u1')).length, 1);
     await db.close();
   });
+
+  test('web references validate and restrict deletes', () async {
+    final root = 'velxodb-ref-${DateTime.now().microsecondsSinceEpoch}';
+    final db = await VelxoWebDatabase.open(root: root);
+    final users = await db.collection('users');
+    final messages = await db.collection('messages');
+    await messages.createReference(2, 'users');
+
+    await expectLater(
+      messages.put(key('m1'), indexedDoc('hello', 'u1')),
+      throwsA(isA<StateError>()),
+    );
+    await users.put(key('u1'), doc('user'));
+    await messages.put(key('m1'), indexedDoc('hello', 'u1'));
+    expect(
+      (await messages.lookupByIndex(2, 'u1')).length,
+      1,
+    );
+    await expectLater(
+      users.delete(key('u1')),
+      throwsA(isA<StateError>()),
+    );
+    await db.close();
+  });
+
+  test('web references cascade deletes', () async {
+    final root = 'velxodb-refc-${DateTime.now().microsecondsSinceEpoch}';
+    final db = await VelxoWebDatabase.open(root: root);
+    final users = await db.collection('users');
+    final messages = await db.collection('messages');
+    await messages.createReference(2, 'users', onDelete: OnDelete.cascade);
+
+    await users.put(key('u1'), doc('user'));
+    await messages.put(key('m1'), indexedDoc('hello', 'u1'));
+    await users.delete(key('u1'));
+    expect(await messages.get(key('m1')), isNull);
+    await db.close();
+  });
 }
