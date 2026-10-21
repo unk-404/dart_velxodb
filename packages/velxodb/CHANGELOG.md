@@ -80,4 +80,10 @@
   and applies `restrict` (default) or `cascade` when a target is deleted.
   Optional `enforceReferences` verifies targets on write. A document and all of
   its index entries now commit in one WAL frame via `engine.applyBatchSync`.
+- Graph edges: `db.graph` stores typed, bidirectional edges
+  (`[relationId][direction][length][node][node]`) with properties, written in one
+  frame; relation names live in catalog v4. Adjacency is a prefix scan
+  (~1.9M links/s, ~1.2M adjacency queries/s), `walk` does a depth-limited BFS
+  across selected or all relations, and `danglingEdges` finds edges whose target
+  document is gone.
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).

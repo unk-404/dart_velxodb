@@ -106,6 +106,15 @@ void main() {
     indexed.putSync(keys[i], indexedMessage(i % 8));
   }
 
+  // A small graph: 64 users in a ring.
+  final graph = GraphStore(engine, _StubRelations());
+  final nodes = <NodeRef>[
+    for (var i = 0; i < keyCount; i++) NodeRef(1, keys[i]),
+  ];
+  for (var i = 0; i < keyCount; i++) {
+    graph.link('follows', nodes[i], nodes[(i + 1) % keyCount]);
+  }
+
   group('query', () {
     benchmark('collection.get', () {
       for (var round = 0; round < batch; round++) {
@@ -162,5 +171,44 @@ void main() {
         } while (token != null);
       }
     });
+
+    benchmark('graph.link', () {
+      for (var round = 0; round < batch; round++) {
+        for (var i = 0; i < keyCount; i++) {
+          graph.link('follows', nodes[i], nodes[(i + 1) % keyCount]);
+        }
+      }
+    });
+
+    benchmark('graph.outgoing', () {
+      for (var round = 0; round < batch; round++) {
+        for (final node in nodes) {
+          sink += graph.outgoing('follows', node).length;
+        }
+      }
+    });
   });
+}
+
+/// In-memory relation registry for the benchmark.
+final class _StubRelations implements RelationCatalog {
+  final Map<String, int> _ids = <String, int>{};
+
+  @override
+  int relationId(String name) =>
+      _ids.putIfAbsent(name, () => 900 + _ids.length);
+
+  @override
+  int? existingRelationId(String name) => _ids[name];
+
+  @override
+  String? relationName(int id) {
+    for (final entry in _ids.entries) {
+      if (entry.value == id) return entry.key;
+    }
+    return null;
+  }
+
+  @override
+  List<String> relationNames() => _ids.keys.toList();
 }

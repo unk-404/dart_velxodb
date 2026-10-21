@@ -161,6 +161,22 @@ value = "value * 100 * 64 / 1000"
 group = "Query"
 
 [[row]]
+id = "query graph.link"
+label = "Graph link"
+note = "both directions, 1 frame"
+unit = "Kops/s"
+value = "value * 100 * 64 / 1000"
+group = "Query"
+
+[[row]]
+id = "query graph.outgoing"
+label = "Graph adjacency"
+note = "64-node ring"
+unit = "Kops/s"
+value = "value * 100 * 64 / 1000"
+group = "Query"
+
+[[row]]
 id = "storage block.write"
 label = "Pack a block (20 docs)"
 note = "includes block CRC"

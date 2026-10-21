@@ -4,6 +4,7 @@ import '../storage/engine.dart';
 import '../storage/io/storage_io.dart';
 import 'catalog.dart';
 import 'collection.dart';
+import 'graph.dart';
 import 'index.dart';
 import 'reference.dart';
 
@@ -11,8 +12,9 @@ import 'reference.dart';
 ///
 /// The catalog assigns each collection a stable two-byte prefix so a single
 /// key/value engine can host all of them without colliding, allocates the same
-/// kind of prefix to secondary indexes, and records reference bindings.
-final class VelxoDatabase implements CollectionCatalog {
+/// kind of prefix to secondary indexes and relations, and records reference
+/// bindings.
+final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
   VelxoDatabase._(this._directory, this._engine, this._catalog)
     : _catalogStore = CatalogStore(_directory);
 
@@ -33,9 +35,13 @@ final class VelxoDatabase implements CollectionCatalog {
   final CatalogStore _catalogStore;
   final Map<String, Collection> _collections = <String, Collection>{};
   Catalog _catalog;
+  GraphStore? _graph;
 
   /// The underlying storage engine, for advanced use.
   StorageEngine get engine => _engine;
+
+  /// Typed edges (graph) on top of the same engine.
+  GraphStore get graph => _graph ??= GraphStore(_engine, this);
 
   /// Root directory.
   SyncStorageDirectory get directory => _directory;
@@ -118,9 +124,27 @@ final class VelxoDatabase implements CollectionCatalog {
     return _catalog.referenceFor(sourceCollectionId, fieldId)!;
   }
 
+  @override
+  int relationId(String name) {
+    final existing = _catalog.relationIdOf(name);
+    if (existing != null) return existing;
+    _catalog = _catalog.withRelation(name);
+    _catalogStore.saveSync(_catalog);
+    return _catalog.relationIdOf(name)!;
+  }
+
+  @override
+  int? existingRelationId(String name) => _catalog.relationIdOf(name);
+
+  @override
+  String? relationName(int id) => _catalog.relationName(id);
+
+  @override
+  List<String> relationNames() =>
+      <String>[for (final relation in _catalog.relations) relation.name];
+
   /// Flushes the memtable into a segment.
   bool flushSync() => _engine.flushSync() != null;
-
   /// Async facade over [flushSync].
   Future<bool> flush() async => flushSync();
 

@@ -6,12 +6,13 @@ import '../serde/vxs.dart';
 import '../storage/directory.dart';
 import 'index.dart';
 import 'reference.dart';
+import 'relation.dart';
 
 /// First byte of the catalog file.
 const int catalogMagic = 0x43;
 
 /// Catalog format version written by this build.
-const int catalogVersion = 3;
+const int catalogVersion = 4;
 
 /// Name of the catalog file.
 const String catalogFileName = 'CATALOG';
@@ -39,15 +40,18 @@ final class Catalog {
     List<CollectionEntry> entries, [
     List<IndexDefinition> indexes = const [],
     List<ReferenceDefinition> references = const [],
+    List<RelationDefinition> relations = const [],
   ]) : entries = List<CollectionEntry>.unmodifiable(entries),
        indexes = List<IndexDefinition>.unmodifiable(indexes),
-       references = List<ReferenceDefinition>.unmodifiable(references);
+       references = List<ReferenceDefinition>.unmodifiable(references),
+       relations = List<RelationDefinition>.unmodifiable(relations);
 
   /// An empty catalog.
   Catalog.empty()
     : entries = const <CollectionEntry>[],
       indexes = const <IndexDefinition>[],
-      references = const <ReferenceDefinition>[];
+      references = const <ReferenceDefinition>[],
+      relations = const <RelationDefinition>[];
 
   /// Registered collections.
   final List<CollectionEntry> entries;
@@ -57,6 +61,9 @@ final class Catalog {
 
   /// Registered reference bindings.
   final List<ReferenceDefinition> references;
+
+  /// Registered graph relations.
+  final List<RelationDefinition> relations;
 
   /// Finds the id of [name], or `null`.
   int? idOf(String name) {
@@ -76,7 +83,7 @@ final class Catalog {
     return null;
   }
 
-  /// Next free id across collections and indexes.
+  /// Next free id across collections, indexes and relations.
   int nextId() {
     var next = 1;
     for (final entry in entries) {
@@ -84,6 +91,9 @@ final class Catalog {
     }
     for (final index in indexes) {
       if (index.indexId >= next) next = index.indexId + 1;
+    }
+    for (final relation in relations) {
+      if (relation.id >= next) next = relation.id + 1;
     }
     return next;
   }
@@ -98,7 +108,7 @@ final class Catalog {
     return Catalog(<CollectionEntry>[
       ...entries,
       CollectionEntry(next, name),
-    ], indexes, references);
+    ], indexes, references, relations);
   }
 
   /// Returns a catalog with an index added for `(collectionId, fieldId)`.
@@ -117,7 +127,36 @@ final class Catalog {
         type: type,
         indexId: next,
       ),
-    ], references);
+    ], references, relations);
+  }
+
+  /// Finds the id of relation [name], or `null`.
+  int? relationIdOf(String name) {
+    for (final relation in relations) {
+      if (relation.name == name) return relation.id;
+    }
+    return null;
+  }
+
+  /// Finds the name of relation [id], or `null`.
+  String? relationName(int id) {
+    for (final relation in relations) {
+      if (relation.id == id) return relation.name;
+    }
+    return null;
+  }
+
+  /// Returns a catalog with relation [name] added.
+  Catalog withRelation(String name) {
+    if (relationIdOf(name) != null) return this;
+    final next = nextId();
+    if (next > 0xFFFE) {
+      throw StateError('relation id space exhausted');
+    }
+    return Catalog(entries, indexes, references, <RelationDefinition>[
+      ...relations,
+      RelationDefinition(next, name),
+    ]);
   }
 
   /// Finds the reference for `(collectionId, fieldId)`, or `null`.
@@ -158,6 +197,10 @@ final class Catalog {
     }
     size += 4 + indexes.length * 7;
     size += 4 + references.length * 7;
+    size += 4 + relations.length * 4;
+    for (final relation in relations) {
+      size += relation.name.length;
+    }
     final out = Uint8List(size);
     out[0] = catalogMagic;
     out[1] = catalogVersion;
@@ -194,6 +237,17 @@ final class Catalog {
       VxsLe.w16(out, pos, reference.targetCollectionId);
       pos += 2;
       out[pos++] = _onDeleteCode(reference.onDelete);
+    }
+    VxsLe.w32(out, pos, relations.length);
+    pos += 4;
+    for (final relation in relations) {
+      VxsLe.w16(out, pos, relation.id);
+      pos += 2;
+      VxsLe.w16(out, pos, relation.name.length);
+      pos += 2;
+      final nameBytes = relation.name.codeUnits;
+      out.setRange(pos, pos + nameBytes.length, nameBytes);
+      pos += nameBytes.length;
     }
     VxsLe.w32(out, pos, VxsCrc32c.compute(out, 0, pos));
     return out;
@@ -295,10 +349,33 @@ final class Catalog {
         );
       }
     }
+    final relations = <RelationDefinition>[];
+    if (version >= 4) {
+      if (pos + 4 > bodyEnd) {
+        throw const VxsFormatException('truncated catalog relation list');
+      }
+      final relationCount = VxsLe.u32(bytes, pos);
+      pos += 4;
+      for (var i = 0; i < relationCount; i++) {
+        if (pos + 4 > bodyEnd) {
+          throw const VxsFormatException('truncated catalog relation');
+        }
+        final id = VxsLe.u16(bytes, pos);
+        pos += 2;
+        final nameLength = VxsLe.u16(bytes, pos);
+        pos += 2;
+        if (pos + nameLength > bodyEnd) {
+          throw const VxsFormatException('truncated catalog relation');
+        }
+        final name = String.fromCharCodes(bytes, pos, pos + nameLength);
+        pos += nameLength;
+        relations.add(RelationDefinition(id, name));
+      }
+    }
     if (pos != bodyEnd) {
       throw const VxsFormatException('trailing bytes in catalog');
     }
-    return Catalog(entries, indexes, references);
+    return Catalog(entries, indexes, references, relations);
   }
 }
 
