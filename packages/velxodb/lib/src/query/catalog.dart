@@ -1,14 +1,16 @@
 import 'dart:typed_data';
 
 import '../serde/crc32c.dart';
+import '../serde/schema.dart';
 import '../serde/vxs.dart';
 import '../storage/directory.dart';
+import 'index.dart';
 
 /// First byte of the catalog file.
 const int catalogMagic = 0x43;
 
-/// Catalog format version.
-const int catalogVersion = 1;
+/// Catalog format version written by this build.
+const int catalogVersion = 2;
 
 /// Name of the catalog file.
 const String catalogFileName = 'CATALOG';
@@ -25,20 +27,27 @@ final class CollectionEntry {
   final String name;
 }
 
-/// Maps collection names to stable numeric prefixes.
+/// Maps collection names to stable numeric prefixes and records indexes.
 ///
 /// Prefixes let one engine host many collections while keeping keys ordered: a
-/// collection's keys are exactly `[id high, id low, key...]`.
+/// collection's keys are exactly `[id high, id low, key...]`. Indexes get their
+/// own id from the same space and use it as their namespace prefix.
 final class Catalog {
-  /// Creates a catalog from [entries].
-  Catalog(List<CollectionEntry> entries)
-    : entries = List<CollectionEntry>.unmodifiable(entries);
+  /// Creates a catalog.
+  Catalog(List<CollectionEntry> entries, [List<IndexDefinition> indexes = const []])
+    : entries = List<CollectionEntry>.unmodifiable(entries),
+      indexes = List<IndexDefinition>.unmodifiable(indexes);
 
   /// An empty catalog.
-  Catalog.empty() : entries = const <CollectionEntry>[];
+  Catalog.empty()
+    : entries = const <CollectionEntry>[],
+      indexes = const <IndexDefinition>[];
 
   /// Registered collections.
   final List<CollectionEntry> entries;
+
+  /// Registered secondary indexes.
+  final List<IndexDefinition> indexes;
 
   /// Finds the id of [name], or `null`.
   int? idOf(String name) {
@@ -48,29 +57,67 @@ final class Catalog {
     return null;
   }
 
-  /// Returns a catalog with [name] added, assigning the next free id.
-  Catalog withCollection(String name, {int? id}) {
-    if (idOf(name) != null) return this;
-    var next = id ?? 1;
+  /// Finds the index for `(collectionId, fieldId)`, or `null`.
+  IndexDefinition? indexFor(int collectionId, int fieldId) {
+    for (final index in indexes) {
+      if (index.collectionId == collectionId && index.fieldId == fieldId) {
+        return index;
+      }
+    }
+    return null;
+  }
+
+  /// Next free id across collections and indexes.
+  int nextId() {
+    var next = 1;
     for (final entry in entries) {
       if (entry.id >= next) next = entry.id + 1;
     }
+    for (final index in indexes) {
+      if (index.indexId >= next) next = index.indexId + 1;
+    }
+    return next;
+  }
+
+  /// Returns a catalog with [name] added.
+  Catalog withCollection(String name, {int? id}) {
+    if (idOf(name) != null) return this;
+    final next = id ?? nextId();
     if (next > 0xFFFE) {
       throw StateError('collection id space exhausted');
     }
     return Catalog(<CollectionEntry>[
       ...entries,
       CollectionEntry(next, name),
+    ], indexes);
+  }
+
+  /// Returns a catalog with an index added for `(collectionId, fieldId)`.
+  Catalog withIndex(int collectionId, int fieldId, VxsType type) {
+    final existing = indexFor(collectionId, fieldId);
+    if (existing != null) return this;
+    final next = nextId();
+    if (next > 0xFFFE) {
+      throw StateError('index id space exhausted');
+    }
+    return Catalog(entries, <IndexDefinition>[
+      ...indexes,
+      IndexDefinition(
+        collectionId: collectionId,
+        fieldId: fieldId,
+        type: type,
+        indexId: next,
+      ),
     ]);
   }
 
   /// Serializes the catalog.
   Uint8List encode() {
-    var size = 8;
+    var size = 8 + 4;
     for (final entry in entries) {
       size += 4 + entry.name.length;
     }
-    size += 4;
+    size += 4 + indexes.length * 7;
     final out = Uint8List(size);
     out[0] = catalogMagic;
     out[1] = catalogVersion;
@@ -86,23 +133,38 @@ final class Catalog {
       out.setRange(pos, pos + nameBytes.length, nameBytes);
       pos += nameBytes.length;
     }
+    VxsLe.w32(out, pos, indexes.length);
+    pos += 4;
+    for (final index in indexes) {
+      VxsLe.w16(out, pos, index.collectionId);
+      pos += 2;
+      VxsLe.w16(out, pos, index.fieldId);
+      pos += 2;
+      out[pos++] = index.type.index;
+      VxsLe.w16(out, pos, index.indexId);
+      pos += 2;
+    }
     VxsLe.w32(out, pos, VxsCrc32c.compute(out, 0, pos));
     return out;
   }
 
-  /// Parses a catalog.
+  /// Parses a catalog. Version 1 files (no indexes) are still readable.
   static Catalog decode(Uint8List bytes) {
     if (bytes.length < 12) {
       throw const VxsFormatException('catalog too short');
     }
-    if (bytes[0] != catalogMagic || bytes[1] != catalogVersion) {
+    if (bytes[0] != catalogMagic) {
       throw const VxsFormatException('bad catalog header');
     }
-    final count = VxsLe.u32(bytes, 4);
+    final version = bytes[1];
+    if (version != 1 && version != catalogVersion) {
+      throw VxsFormatException('unsupported catalog version $version');
+    }
     final bodyEnd = bytes.length - 4;
     if (VxsLe.u32(bytes, bodyEnd) != VxsCrc32c.compute(bytes, 0, bodyEnd)) {
       throw const VxsFormatException('catalog checksum mismatch');
     }
+    final count = VxsLe.u32(bytes, 4);
     var pos = 8;
     final entries = <CollectionEntry>[];
     for (var i = 0; i < count; i++) {
@@ -120,10 +182,41 @@ final class Catalog {
       pos += nameLength;
       entries.add(CollectionEntry(id, name));
     }
+    final indexes = <IndexDefinition>[];
+    if (version >= 2) {
+      if (pos + 4 > bodyEnd) {
+        throw const VxsFormatException('truncated catalog index list');
+      }
+      final indexCount = VxsLe.u32(bytes, pos);
+      pos += 4;
+      for (var i = 0; i < indexCount; i++) {
+        if (pos + 7 > bodyEnd) {
+          throw const VxsFormatException('truncated catalog index');
+        }
+        final collectionId = VxsLe.u16(bytes, pos);
+        pos += 2;
+        final fieldId = VxsLe.u16(bytes, pos);
+        pos += 2;
+        final typeCode = bytes[pos++];
+        if (typeCode >= VxsType.values.length) {
+          throw VxsFormatException('unknown index type $typeCode');
+        }
+        final indexId = VxsLe.u16(bytes, pos);
+        pos += 2;
+        indexes.add(
+          IndexDefinition(
+            collectionId: collectionId,
+            fieldId: fieldId,
+            type: VxsType.values[typeCode],
+            indexId: indexId,
+          ),
+        );
+      }
+    }
     if (pos != bodyEnd) {
       throw const VxsFormatException('trailing bytes in catalog');
     }
-    return Catalog(entries);
+    return Catalog(entries, indexes);
   }
 }
 

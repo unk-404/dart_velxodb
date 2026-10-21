@@ -2,9 +2,12 @@ import 'dart:typed_data';
 
 import 'package:blit/blit.dart';
 
+import '../serde/builder.dart';
+import '../serde/schema.dart';
 import '../serde/view.dart';
 import '../storage/engine.dart';
 import 'cursor.dart';
+import 'index.dart';
 import 'types.dart';
 
 /// A named namespace of documents inside a database.
@@ -13,9 +16,19 @@ import 'types.dart';
 /// big-endian collection id. Because the prefix is fixed-width, ordering inside
 /// a collection is exactly the ordering of the user key bytes, which is what
 /// lets segment index range scans work.
+///
+/// Secondary indexes live in the same engine under their own two-byte id, with
+/// entries shaped `[indexId][encodedValue][primaryKey]`.
 final class Collection {
   /// Creates a collection handle. Use [VelxoDatabase.collection] instead.
-  Collection(this.engine, this.id, this.name);
+  Collection(this.engine, this.id, this.name, {IndexCatalog? catalog})
+    : _catalog = catalog {
+    if (catalog != null) {
+      for (final definition in catalog.indexesFor(id)) {
+        _indexes[definition.fieldId] = definition;
+      }
+    }
+  }
 
   /// Underlying engine.
   final StorageEngine engine;
@@ -26,36 +39,108 @@ final class Collection {
   /// Collection name.
   final String name;
 
+  final IndexCatalog? _catalog;
+  final Map<int, IndexDefinition> _indexes = <int, IndexDefinition>{};
+
+  static final Bytes _emptyDocument = DocBuilder().finish();
+
+  /// Declared secondary indexes by field id.
+  Map<int, IndexDefinition> get indexes => Map.unmodifiable(_indexes);
+
   /// Reads [key], or `null` when absent or deleted.
   Bytes? get(Uint8List key) => engine.get(composeKey(key));
 
-  /// Inserts or replaces [key].
-  void putSync(Uint8List key, Bytes document) =>
-      engine.putSync(composeKey(key), document);
+  /// Inserts or replaces [key], maintaining every secondary index.
+  void putSync(Uint8List key, Bytes document) {
+    final full = composeKey(key);
+    final old = engine.get(full);
+    final oldView = old == null ? null : DocView.parse(old.asUint8List());
+    final newView = DocView.parse(document.asUint8List());
+    engine.putSync(full, document);
+    _updateIndexes(key, oldView, newView);
+  }
 
   /// Async facade over [putSync].
   Future<void> put(Uint8List key, Bytes document) async =>
       putSync(key, document);
 
-  /// Inserts or replaces several documents with one WAL frame.
-  void putManySync(List<ScanEntry> entries) => engine.putManySync(<
-    ({Uint8List key, Bytes document})
-  >[
-    for (final entry in entries)
-      (key: composeKey(entry.key), document: entry.value),
-  ]);
+  /// Inserts or replaces several documents, maintaining every secondary index.
+  ///
+  /// Index maintenance needs the previous document, so this cannot use the
+  /// engine's single-frame batch write yet.
+  void putManySync(List<ScanEntry> entries) {
+    for (final entry in entries) {
+      putSync(entry.key, entry.value);
+    }
+  }
 
-  /// Deletes [key].
-  void deleteSync(Uint8List key) => engine.deleteSync(composeKey(key));
+  /// Deletes [key], removing its secondary index entries.
+  void deleteSync(Uint8List key) {
+    final full = composeKey(key);
+    final old = engine.get(full);
+    final oldView = old == null ? null : DocView.parse(old.asUint8List());
+    engine.deleteSync(full);
+    if (oldView != null) _updateIndexes(key, oldView, null);
+  }
 
   /// Async facade over [deleteSync].
   Future<void> delete(Uint8List key) async => deleteSync(key);
 
-  /// Opens a streaming cursor over an optional prefix and key range.
+  /// Creates (and backfills) a secondary index on [fieldId].
+  IndexDefinition createIndex(int fieldId, VxsType type) {
+    final existing = _indexes[fieldId];
+    if (existing != null) {
+      if (existing.type != type) {
+        throw ArgumentError('field $fieldId is already indexed as '
+            '${existing.type.name}');
+      }
+      return existing;
+    }
+    final catalog = _catalog;
+    if (catalog == null) {
+      throw StateError('this collection handle has no catalog; '
+          'open it through VelxoDatabase.collection');
+    }
+    final definition = catalog.registerIndex(id, fieldId, type);
+    _indexes[fieldId] = definition;
+    _backfill(definition);
+    return definition;
+  }
+
+  /// Looks up primary keys whose indexed [fieldId] equals [value].
   ///
-  /// [start] is inclusive and [end] exclusive by default; both are user keys.
-  /// [prefix] restricts to keys that begin with it. The cursor merges the
-  /// memtable with segments newest-first and skips tombstoned keys.
+  /// Stale entries (a document that changed while its index entry survived a
+  /// crash) are filtered by re-reading and comparing the field, so results are
+  /// always correct even without transactional index updates.
+  List<ScanEntry> lookupByIndexSync(int fieldId, Object value) {
+    final definition = _indexes[fieldId];
+    if (definition == null) {
+      throw StateError('no index on field $fieldId');
+    }
+    final prefix = definition.valuePrefix(value);
+    final encodedLength = prefix.length - 2;
+    final cursor = buildCollectionCursor(
+      engine: engine,
+      fullPrefix: prefix,
+      lower: prefix,
+      includeLower: true,
+      upper: _prefixUpperBound(prefix),
+      includeUpper: false,
+    );
+    final out = <ScanEntry>[];
+    while (cursor.moveNext()) {
+      final raw = cursor.current.key;
+      final primaryKey = Uint8List.sublistView(raw, encodedLength);
+      final document = get(primaryKey);
+      if (document == null) continue;
+      final view = DocView.parse(document.asUint8List());
+      if (definition.readValue(view) != value) continue;
+      out.add((key: primaryKey, value: document));
+    }
+    return out;
+  }
+
+  /// Opens a streaming cursor over an optional prefix and key range.
   CollectionCursor cursor({
     Uint8List? prefix,
     Uint8List? start,
@@ -143,6 +228,43 @@ final class Collection {
     out[1] = id & 0xFF;
     out.setRange(2, 2 + key.length, key);
     return out;
+  }
+
+  void _updateIndexes(
+    Uint8List primaryKey,
+    DocView? oldDocument,
+    DocView? newDocument,
+  ) {
+    if (_indexes.isEmpty) return;
+    for (final definition in _indexes.values) {
+      final oldValue =
+          oldDocument == null ? null : definition.readValue(oldDocument);
+      final newValue =
+          newDocument == null ? null : definition.readValue(newDocument);
+      if (oldValue != null && oldValue != newValue) {
+        engine.deleteSync(definition.entryKey(oldValue, primaryKey));
+      }
+      if (newValue != null && oldValue != newValue) {
+        engine.putSync(
+          definition.entryKey(newValue, primaryKey),
+          _emptyDocument,
+        );
+      }
+    }
+  }
+
+  void _backfill(IndexDefinition definition) {
+    final cursor = this.cursor();
+    while (cursor.moveNext()) {
+      final entry = cursor.current;
+      final view = DocView.parse(entry.value.asUint8List());
+      final value = definition.readValue(view);
+      if (value == null) continue;
+      engine.putSync(
+        definition.entryKey(value, entry.key),
+        _emptyDocument,
+      );
+    }
   }
 
   /// Smallest key greater than every key with [prefix], or `null`.

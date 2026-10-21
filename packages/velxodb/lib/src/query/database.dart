@@ -1,14 +1,17 @@
+import '../serde/schema.dart';
 import '../storage/directory.dart';
 import '../storage/engine.dart';
 import '../storage/io/storage_io.dart';
 import 'catalog.dart';
 import 'collection.dart';
+import 'index.dart';
 
 /// An embedded database: one directory, one engine, many collections.
 ///
 /// The catalog assigns each collection a stable two-byte prefix so a single
-/// key/value engine can host all of them without colliding.
-final class VelxoDatabase {
+/// key/value engine can host all of them without colliding, and allocates the
+/// same kind of prefix to secondary indexes.
+final class VelxoDatabase implements IndexCatalog {
   VelxoDatabase._(this._directory, this._engine, this._catalog)
     : _catalogStore = CatalogStore(_directory);
 
@@ -27,6 +30,7 @@ final class VelxoDatabase {
   final SyncStorageDirectory _directory;
   final StorageEngine _engine;
   final CatalogStore _catalogStore;
+  final Map<String, Collection> _collections = <String, Collection>{};
   Catalog _catalog;
 
   /// The underlying storage engine, for advanced use.
@@ -41,13 +45,36 @@ final class VelxoDatabase {
 
   /// Returns (creating if needed) the collection called [name].
   Collection collection(String name) {
+    final cached = _collections[name];
+    if (cached != null) return cached;
     var id = _catalog.idOf(name);
     if (id == null) {
       _catalog = _catalog.withCollection(name);
       _catalogStore.saveSync(_catalog);
       id = _catalog.idOf(name)!;
     }
-    return Collection(_engine, id, name);
+    final created = Collection(_engine, id, name, catalog: this);
+    _collections[name] = created;
+    return created;
+  }
+
+  @override
+  IndexDefinition? indexFor(int collectionId, int fieldId) =>
+      _catalog.indexFor(collectionId, fieldId);
+
+  @override
+  List<IndexDefinition> indexesFor(int collectionId) => <IndexDefinition>[
+    for (final index in _catalog.indexes)
+      if (index.collectionId == collectionId) index,
+  ];
+
+  @override
+  IndexDefinition registerIndex(int collectionId, int fieldId, VxsType type) {
+    final existing = _catalog.indexFor(collectionId, fieldId);
+    if (existing != null) return existing;
+    _catalog = _catalog.withIndex(collectionId, fieldId, type);
+    _catalogStore.saveSync(_catalog);
+    return _catalog.indexFor(collectionId, fieldId)!;
   }
 
   /// Flushes the memtable into a segment.

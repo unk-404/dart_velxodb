@@ -50,4 +50,11 @@
   seek in O(log n + k) instead of collecting and sorting the whole memtable
   (~17.5M docs/s for a 1k window over 50k entries), and flush now iterates in
   key order.
+- Secondary indexes: `Collection.createIndex(fieldId, type)` allocates its own
+  two-byte namespace and stores `[indexId][encodedValue][primaryKey]` entries.
+  Integers use an order-preserving sign/magnitude encoding and strings use an
+  escaped UTF-8 encoding, so prefix lookups are unambiguous. Indexes are
+  maintained on write/delete (read-old, then delta), backfilled when created,
+  persisted in catalog v2, and lookups verify the field value to tolerate
+  non-transactional crashes.
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).
