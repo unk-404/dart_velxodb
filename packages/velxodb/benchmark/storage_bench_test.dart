@@ -52,6 +52,19 @@ void main() {
   final engine = StorageEngine(walFile: _NullStorageFile());
   engine.openSync();
 
+  // A small segment reused for lookup and scan benchmarks.
+  const segmentDocs = 64;
+  final segmentKeys = <Uint8List>[
+    for (var i = 0; i < segmentDocs; i++)
+      Uint8List.fromList('seg-${i.toString().padLeft(3, '0')}'.codeUnits),
+  ];
+  final segmentBuilder = SegmentBuilder(blockTargetSize: 4096);
+  for (final key in segmentKeys) {
+    segmentBuilder.add(key, doc);
+  }
+  final segmentBytes = segmentBuilder.finish();
+  final segment = SegmentReader(segmentBytes.asUint8List());
+
   group('storage', () {
     benchmark('block.write', () {
       final w = BlockWriter(targetSize: 8 * 1024);
@@ -116,6 +129,34 @@ void main() {
           sink += engine.get(keys[i])?.length ?? -1;
         }
       }
+    });
+
+    benchmark('segment.build', () {
+      for (var round = 0; round < batch; round++) {
+        final builder = SegmentBuilder(blockTargetSize: 4096);
+        for (final key in segmentKeys) {
+          builder.add(key, doc);
+        }
+        sink = builder.finish().length;
+      }
+    });
+
+    benchmark('segment.find', () {
+      for (var round = 0; round < batch; round++) {
+        for (final key in segmentKeys) {
+          sink += segment.find(key)?.byteLength ?? -1;
+        }
+      }
+    });
+
+    benchmark('segment.scan', () {
+      var acc = 0;
+      for (var round = 0; round < batch; round++) {
+        segment.forEach((document) {
+          acc += document.byteLength;
+        });
+      }
+      sink = acc;
     });
   });
 }

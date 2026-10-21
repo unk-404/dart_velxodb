@@ -43,6 +43,29 @@ value = "1000000000 / (value * 100)"
 group = "VXS format"
 
 [[row]]
+id = "storage segment.build"
+label = "Build a segment"
+note = "64 docs, sorted index + bloom"
+unit = "Kdocs/s"
+value = "value * 100 * 64 / 1000"
+group = "Storage"
+
+[[row]]
+id = "storage segment.find"
+label = "Segment point lookup"
+note = "bloom + binary search"
+unit = "Mops/s"
+value = "value * 100 * 64 / 1000000"
+group = "Storage"
+
+[[row]]
+id = "storage segment.scan"
+label = "Segment scan"
+unit = "Mdocs/s"
+value = "value * 100 * 64 / 1000000"
+group = "Storage"
+
+[[row]]
 id = "storage engine.put"
 label = "Engine write path"
 note = "WAL + arena + memtable, sync"

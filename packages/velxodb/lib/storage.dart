@@ -15,7 +15,9 @@ library;
 
 export 'src/storage/arena.dart';
 export 'src/storage/block.dart';
+export 'src/storage/bloom.dart';
 export 'src/storage/engine.dart';
 export 'src/storage/file.dart';
 export 'src/storage/memtable.dart';
+export 'src/storage/segment.dart';
 export 'src/storage/wal.dart';

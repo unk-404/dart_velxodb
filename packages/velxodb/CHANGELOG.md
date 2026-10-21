@@ -28,4 +28,7 @@
 - Memtable with open addressing (~2.2x faster than `HashMap` for inserts and
   lookups), chunked document arena with stable views, and a synchronous write
   path (WAL → arena → memtable) with an async facade.
+- Segments: immutable blocks plus a sorted primary index and a bloom filter,
+  with a checksum over all metadata. `SegmentReader.find` is a bloom probe plus
+  a binary search and returns a zero-copy document view.
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).
