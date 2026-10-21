@@ -7,7 +7,6 @@ import '../serde/schema.dart';
 import '../serde/view.dart';
 import 'collection.dart';
 import 'plan.dart';
-import 'types.dart';
 
 /// One field of a typed document.
 ///
@@ -131,33 +130,54 @@ final class DocumentSchema<T> {
   Iterable<Field> get indexedFields => fields.where((field) => field.indexed);
 }
 
-/// A collection paired with a typed schema.
+/// A collection paired with typed encode/decode functions.
+///
+/// Direct functions (usually static method tear-offs from generated code) keep
+/// the hot path free of schema objects and per-document indirection through a
+/// closure field; [TypedCollection.schema] is available when a
+/// [DocumentSchema] is what you have.
 final class TypedCollection<T> {
-  /// Wraps [collection] with [schema].
-  TypedCollection(this.collection, this.schema);
+  /// Wraps [collection] with direct codec functions.
+  TypedCollection(
+    this.collection,
+    this.encodeValue,
+    this.decodeValue, {
+    this.schemaId = 1,
+  });
+
+  /// Wraps [collection] with a [DocumentSchema].
+  TypedCollection.schema(
+    this.collection,
+    DocumentSchema<T> schema, {
+    this.schemaId = 1,
+  }) : encodeValue = ((value, builder) => schema.write(value, builder)),
+       decodeValue = schema.read;
 
   /// Underlying untyped collection.
   final Collection collection;
 
-  /// Model schema.
-  final DocumentSchema<T> schema;
+  /// Writes a model into a builder.
+  final void Function(T value, DocBuilder builder) encodeValue;
 
-  /// Creates the secondary indexes declared by [schema].
-  void ensureIndexes() {
-    for (final field in schema.indexedFields) {
-      collection.createIndex(field.id, field.type);
-    }
-  }
+  /// Reads a model from a view.
+  final T Function(DocView view) decodeValue;
+
+  /// Schema id stored in the document header.
+  final int schemaId;
 
   /// Reads [key], or `null`.
   T? getSync(Uint8List key) {
     final bytes = collection.get(key);
-    return bytes == null ? null : schema.decode(bytes);
+    if (bytes == null) return null;
+    return decodeValue(DocView.parse(bytes.asUint8List()));
   }
 
   /// Inserts or replaces [key].
-  void putSync(Uint8List key, T value) =>
-      collection.putSync(key, schema.encode(value));
+  void putSync(Uint8List key, T value) {
+    final builder = DocBuilder(schemaId: schemaId);
+    encodeValue(value, builder);
+    collection.putSync(key, builder.finish());
+  }
 
   /// Async facade over [putSync].
   Future<void> put(Uint8List key, T value) async => putSync(key, value);
@@ -168,10 +188,12 @@ final class TypedCollection<T> {
   /// Runs [query] and decodes the matching documents.
   List<T> findSync(Query query) => <T>[
     for (final entry in collection.findSync(query))
-      schema.decode(entry.value),
+      decodeValue(DocView.parse(entry.value.asUint8List())),
   ];
 
-  /// Scans and decodes, optionally filtering on the model.
-  List<ScanEntry> scanSync({int? limit}) =>
-      collection.scanSync(limit: limit);
+  /// Scans and decodes, optionally limiting.
+  List<T> scanSync({int? limit}) => <T>[
+    for (final entry in collection.scanSync(limit: limit))
+      decodeValue(DocView.parse(entry.value.asUint8List())),
+  ];
 }

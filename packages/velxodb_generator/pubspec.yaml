@@ -1,0 +1,13 @@
+name: velxodb_generator
+description: Code generator for velxodb typed models. Dev-time only.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.5
+
+resolution: workspace
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.26.0

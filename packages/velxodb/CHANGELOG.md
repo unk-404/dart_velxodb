@@ -63,8 +63,11 @@
   plans that pick an index for an indexable `and` branch and fall back to a scan
   otherwise, with a residual filter so results never depend on the plan.
   `collection.explainSync` reports the choice.
-- Typed models: `DocumentSchema<T>` / `TypedCollection<T>` and a dependency-free
-  generator (`package:velxodb/generator.dart`) that turns a `ModelSpec` into a
-  model class, its schema and a typed collection opener. Generated code is
-  committed as a fixture and compiled by the test suite.
+- Typed models: `DocumentSchema<T>` / `TypedCollection<T>` and a dev-time
+  generator, now in its own package `velxodb_generator`, that turns a `ModelSpec`
+  into plain Dart: `const` field ids, static `encodeInto`/`decodeFrom`, generated
+  index creation and a typed collection opener built from static tear-offs. No
+  schema objects, closures or reflection on the hot path (AOT: decode 366 ns vs
+  392 ns through `DocumentSchema`). Generated code is committed as a fixture and
+  compiled by the test suite.
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).
