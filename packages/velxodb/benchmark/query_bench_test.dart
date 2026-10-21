@@ -52,5 +52,16 @@ void main() {
         sink += collection.scanPrefixSync().length;
       }
     });
+
+    benchmark('collection.cursor', () {
+      for (var round = 0; round < batch; round++) {
+        final cursor = collection.cursor();
+        var count = 0;
+        while (cursor.moveNext()) {
+          count++;
+        }
+        sink += count;
+      }
+    });
   });
 }

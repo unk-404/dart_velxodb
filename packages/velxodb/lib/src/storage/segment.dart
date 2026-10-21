@@ -432,6 +432,42 @@ final class SegmentReader {
     return true;
   }
 
+  /// Creates a forward cursor over a key range.
+  ///
+  /// [lower] and [upper] are full keys (collection prefix included). The cursor
+  /// seeks with a binary search instead of walking the segment from the start.
+  SegmentEntryCursor entryCursor({
+    Uint8List? lower,
+    bool includeLower = true,
+    Uint8List? upper,
+    bool includeUpper = false,
+  }) {
+    var index = 0;
+    if (lower != null) {
+      var low = 0;
+      var high = _indexCount - 1;
+      while (low <= high) {
+        final middle = (low + high) >> 1;
+        final comparison = _compareEntry(middle, lower);
+        if (comparison < 0) {
+          low = middle + 1;
+        } else {
+          high = middle - 1;
+        }
+      }
+      index = low;
+      if (!includeLower && index < _indexCount) {
+        final entryStart = _entryStart(index);
+        final keyLength = VxsLe.u16(buffer, entryStart);
+        if (keyLength == lower.length &&
+            _rangeStartsWith(entryStart + 2, keyLength, lower)) {
+          index++;
+        }
+      }
+    }
+    return SegmentEntryCursor._(this, index, upper, includeUpper);
+  }
+
   /// Visits every document in block order.
   void forEach(void Function(DocView document) visit) {
     for (var i = 0; i < blockCount; i++) {
@@ -466,5 +502,68 @@ final class SegmentReader {
       0,
       key.length,
     );
+  }
+}
+
+/// Forward cursor over a segment's index entries, ascending by key.
+final class SegmentEntryCursor {
+  SegmentEntryCursor._(
+    this._reader,
+    this._index,
+    this._upper,
+    this._includeUpper,
+  );
+
+  final SegmentReader _reader;
+  int _index;
+  final Uint8List? _upper;
+  final bool _includeUpper;
+
+  Uint8List _key = Uint8List(0);
+  DocView? _document;
+
+  /// Current key (a view into the segment).
+  Uint8List get key => _key;
+
+  /// Current document; `null` when the entry is a tombstone.
+  DocView? get document => _document;
+
+  /// Advances to the next in-range entry.
+  bool moveNext() {
+    while (_index < _reader._indexCount) {
+      final entryStart = _reader._entryStart(_index);
+      final keyLength = VxsLe.u16(_reader.buffer, entryStart);
+      final key = Uint8List.sublistView(
+        _reader.buffer,
+        entryStart + 2,
+        entryStart + 2 + keyLength,
+      );
+      if (_upper != null) {
+        final comparison = StringView.compareRanges(
+          key,
+          0,
+          key.length,
+          _upper,
+          0,
+          _upper.length,
+        );
+        if (comparison > 0 || (comparison == 0 && !_includeUpper)) {
+          _index = _reader._indexCount;
+          return false;
+        }
+      }
+      final docOffset = VxsLe.u32(_reader.buffer, entryStart + 2 + keyLength);
+      _key = key;
+      _document = docOffset == segmentTombstone
+          ? null
+          : DocView.parse(
+              _reader.buffer,
+              docOffset,
+              _reader.end - docOffset,
+            );
+      _index++;
+      return true;
+    }
+    return false;
   }
 }

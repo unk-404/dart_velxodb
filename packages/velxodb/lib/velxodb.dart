@@ -9,8 +9,10 @@
 library;
 
 export 'src/query/catalog.dart' show Catalog, CollectionEntry;
-export 'src/query/collection.dart' show Collection, ScanEntry;
+export 'src/query/collection.dart' show Collection;
+export 'src/query/cursor.dart' show CollectionCursor;
 export 'src/query/database.dart';
+export 'src/query/types.dart' show ScanEntry;
 export 'src/query/velxo.dart';
 
 /// Semantic version of the package.

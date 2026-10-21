@@ -2,19 +2,17 @@ import 'dart:typed_data';
 
 import 'package:blit/blit.dart';
 
-import '../serde/string_view.dart';
+import '../serde/view.dart';
 import '../storage/engine.dart';
-import '../storage/memtable.dart';
-
-/// One key/value pair returned by a scan.
-typedef ScanEntry = ({Uint8List key, Bytes value});
+import 'cursor.dart';
+import 'types.dart';
 
 /// A named namespace of documents inside a database.
 ///
 /// Collections share one engine: every key is prefixed with a two-byte
 /// big-endian collection id. Because the prefix is fixed-width, ordering inside
 /// a collection is exactly the ordering of the user key bytes, which is what
-/// lets segment index range scans work later.
+/// lets segment index range scans work.
 final class Collection {
   /// Creates a collection handle. Use [VelxoDatabase.collection] instead.
   Collection(this.engine, this.id, this.name);
@@ -53,48 +51,86 @@ final class Collection {
   /// Async facade over [deleteSync].
   Future<void> delete(Uint8List key) async => deleteSync(key);
 
-  /// Returns every entry whose key starts with [prefix], sorted by key.
+  /// Opens a streaming cursor over an optional prefix and key range.
   ///
-  /// This is a merged scan: the memtable wins over segments, segments are
-  /// searched newest-first, and tombstones suppress older copies. It is
-  /// materialised on purpose for now; a streaming cursor comes with the query
-  /// planner.
-  List<ScanEntry> scanPrefixSync([Uint8List? prefix]) {
+  /// [start] is inclusive and [end] exclusive by default; both are user keys.
+  /// [prefix] restricts to keys that begin with it. The cursor merges the
+  /// memtable with segments newest-first and skips tombstoned keys.
+  CollectionCursor cursor({
+    Uint8List? prefix,
+    Uint8List? start,
+    Uint8List? end,
+    bool includeStart = true,
+    bool includeEnd = false,
+  }) {
     final fullPrefix = composeKey(prefix ?? Uint8List(0));
-    final seen = MemTable();
-    final results = <ScanEntry>[];
-
-    engine.memtable.forEach((key, chunk, offset, length) {
-      if (!_startsWith(key, fullPrefix)) return;
-      seen.put(key, 0, 0, 0);
-      if (length < 0) return;
-      results.add((
-        key: _stripPrefix(key),
-        value: engine.arena.view(chunk, offset, length),
-      ));
-    });
-
-    for (var i = engine.segments.length - 1; i >= 0; i--) {
-      engine.segments[i].forEachEntryPrefix(fullPrefix, (key, document) {
-        if (seen.contains(key)) return;
-        seen.put(key, 0, 0, 0);
-        if (document == null) return;
-        results.add((key: _stripPrefix(key), value: document.toBytes()));
-      });
+    final lower = start != null ? composeKey(start) : fullPrefix;
+    Uint8List? upper;
+    if (end != null) {
+      upper = composeKey(end);
+    } else {
+      final bound = _prefixUpperBound(fullPrefix);
+      if (bound != null) upper = bound;
     }
-
-    results.sort(
-      (a, b) => StringView.compareRanges(
-        a.key,
-        0,
-        a.key.length,
-        b.key,
-        0,
-        b.key.length,
-      ),
+    return buildCollectionCursor(
+      engine: engine,
+      fullPrefix: fullPrefix,
+      lower: lower,
+      includeLower: includeStart,
+      upper: upper,
+      includeUpper: includeEnd,
     );
-    return results;
   }
+
+  /// Scans into a list, optionally filtering decoded documents and limiting.
+  List<ScanEntry> scanSync({
+    Uint8List? prefix,
+    Uint8List? start,
+    Uint8List? end,
+    bool includeStart = true,
+    bool includeEnd = false,
+    bool Function(DocView document)? where,
+    int? limit,
+  }) {
+    final cursor = this.cursor(
+      prefix: prefix,
+      start: start,
+      end: end,
+      includeStart: includeStart,
+      includeEnd: includeEnd,
+    );
+    final out = <ScanEntry>[];
+    while (cursor.moveNext()) {
+      final entry = cursor.current;
+      if (where != null && !where(viewOf(entry.value))) continue;
+      out.add(entry);
+      if (limit != null && out.length >= limit) break;
+    }
+    return out;
+  }
+
+  /// Async facade over [scanSync].
+  Future<List<ScanEntry>> scan({
+    Uint8List? prefix,
+    Uint8List? start,
+    Uint8List? end,
+    bool includeStart = true,
+    bool includeEnd = false,
+    bool Function(DocView document)? where,
+    int? limit,
+  }) async => scanSync(
+    prefix: prefix,
+    start: start,
+    end: end,
+    includeStart: includeStart,
+    includeEnd: includeEnd,
+    where: where,
+    limit: limit,
+  );
+
+  /// Returns every entry whose key starts with [prefix], sorted by key.
+  List<ScanEntry> scanPrefixSync([Uint8List? prefix]) =>
+      scanSync(prefix: prefix);
 
   /// Async facade over [scanPrefixSync].
   Future<List<ScanEntry>> scanPrefix([Uint8List? prefix]) async =>
@@ -109,14 +145,15 @@ final class Collection {
     return out;
   }
 
-  Uint8List _stripPrefix(Uint8List key) =>
-      Uint8List.sublistView(key, 2, key.length);
-
-  static bool _startsWith(Uint8List key, Uint8List prefix) {
-    if (key.length < prefix.length) return false;
-    for (var i = 0; i < prefix.length; i++) {
-      if (key[i] != prefix[i]) return false;
+  /// Smallest key greater than every key with [prefix], or `null`.
+  static Uint8List? _prefixUpperBound(Uint8List prefix) {
+    final out = Uint8List.fromList(prefix);
+    for (var i = out.length - 1; i >= 0; i--) {
+      if (out[i] != 0xFF) {
+        out[i]++;
+        return Uint8List.sublistView(out, 0, i + 1);
+      }
     }
-    return true;
+    return null;
   }
 }

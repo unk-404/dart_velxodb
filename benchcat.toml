@@ -113,6 +113,14 @@ value = "value * 100 * 64 / 1000"
 group = "Query"
 
 [[row]]
+id = "query collection.cursor"
+label = "Collection cursor"
+note = "streamed, no result list"
+unit = "Kdocs/s"
+value = "value * 100 * 64 / 1000"
+group = "Query"
+
+[[row]]
 id = "storage block.write"
 label = "Pack a block (20 docs)"
 note = "includes block CRC"
