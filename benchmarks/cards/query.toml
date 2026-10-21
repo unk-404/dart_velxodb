@@ -1,0 +1,64 @@
+# Query card: collections, indexes, paging, full-text, graph and references.
+[font]
+family = "sniglet"
+
+[render]
+title = "velxodb - query"
+subtitle = "{platform|local} - commit {commit:short|local} - JIT micro suite, in-memory engine"
+footer = "relations: graph edges both ways, BFS, reference lifecycle"
+width = 920
+kaomoji = ""
+
+[[series]]
+label = "velxodb"
+input = "benchmarks/results/query.json"
+format = "json"
+color = "#5B8FF9"
+
+[[row]]
+id = "query collection.get"
+
+[[row]]
+id = "query collection.scan"
+
+[[row]]
+id = "query collection.cursor"
+
+[[row]]
+id = "query collection.put.indexed"
+
+[[row]]
+id = "query collection.indexLookup"
+
+[[row]]
+id = "query collection.indexRange"
+
+[[row]]
+id = "query collection.page"
+
+[[row]]
+id = "query collection.textSearch"
+
+[[row]]
+id = "query graph.link"
+
+[[row]]
+id = "query graph.outgoing"
+
+[[row]]
+id = "query graph.incoming"
+
+[[row]]
+id = "query graph.walk"
+
+[[row]]
+id = "query reference.put"
+
+[[row]]
+id = "query reference.reverse"
+
+[[row]]
+id = "query reference.restrict"
+
+[[row]]
+id = "query reference.cascadeCycle"

@@ -5,7 +5,6 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/storage.dart';
@@ -13,7 +12,8 @@ import 'package:velxodb/velxodb.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text) => (DocBuilder(schemaId: 1)..putString(1, text)).finish();
+Bytes doc(String text) =>
+    (DocBuilder(schemaId: 1)..putString(1, text)).finish();
 
 String? textOf(Bytes? bytes) =>
     bytes == null ? null : DocView.parse(bytes.asUint8List()).getString(1);
@@ -154,14 +154,17 @@ void main() {
       collection.putSync(k('b'), doc('beta'));
       await db.waitForMaintenance();
 
-      expect(DocView.parse(collection.get(k('a'))!.asUint8List()).getString(1),
-          'alpha');
+      expect(
+        DocView.parse(collection.get(k('a'))!.asUint8List()).getString(1),
+        'alpha',
+      );
       await db.close(flush: true);
 
       final reopened = VelxoDatabase.openSync(root.path);
       final reopenedCollection = reopened.collection('items');
       expect(
-        DocView.parse(reopenedCollection.get(k('b'))!.asUint8List()).getString(1),
+        DocView.parse(reopenedCollection.get(k('b'))!.asUint8List())
+            .getString(1),
         'beta',
       );
       await reopened.close();

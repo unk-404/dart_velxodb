@@ -72,8 +72,9 @@ abstract interface class TextIndexCatalog {
   TextIndexDefinition registerTextIndex(
     int collectionId,
     int fieldId,
-    Tokenizer tokenizer,
-  );
+    Tokenizer tokenizer, {
+    bool ready = true,
+  });
 }
 
 /// Everything a [Collection] needs from the catalog.

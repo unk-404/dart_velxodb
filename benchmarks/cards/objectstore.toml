@@ -1,0 +1,48 @@
+# Object-store card: the request shape of a 200k-document workload, not a
+# throughput race. A real S3 adapter is integrator code, so the store here is the
+# in-repo simulator and every number is a request or a byte count.
+[font]
+family = "sniglet"
+
+[render]
+title = "velxodb - object store request shape"
+subtitle = "{platform|local} - commit {commit:short|local} - simulated store, no network"
+footer = "counts are exact; throughput is local CPU only"
+width = 920
+kaomoji = ""
+
+[[series]]
+label = "velxodb object store"
+input = "benchmarks/results/objectstore.json"
+format = "json"
+color = "#5B8FF9"
+
+[[row]]
+id = "objectstore.open.requests"
+
+[[row]]
+id = "objectstore.import.requests"
+
+[[row]]
+id = "objectstore.import.docs_per_s"
+
+[[row]]
+id = "objectstore.import.bytes_out"
+
+[[row]]
+id = "objectstore.churn.requests"
+
+[[row]]
+id = "objectstore.compact.requests"
+
+[[row]]
+id = "objectstore.reopen.requests"
+
+[[row]]
+id = "objectstore.reads.requests"
+
+[[row]]
+id = "objectstore.request_amplification"
+
+[[row]]
+id = "objectstore.stored"

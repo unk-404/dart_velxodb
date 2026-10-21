@@ -1,45 +1,23 @@
-// VXS format benchmarks. Run from packages/velxodb:
-//   dart run benchmark_test --output jsonl benchmark
+// VXS format benchmarks: encode, decode, projection, key comparison, CRC.
 //
-// Each iteration performs [batch] operations: the benchmark harness has
-// microsecond-granularity overhead that would otherwise dominate a 130-byte
-// encode. Derived per-op numbers live in `benchcat.toml`.
-import 'dart:convert';
+// Each iteration performs `kBatch` operations: the benchmark harness has
+// microsecond-granularity overhead that would otherwise dominate a 130 B encode.
+// The per-operation numbers are derived from `lib/manifest.dart`.
+//
+// Run: dart run benchmark_test --output jsonl .
 import 'dart:typed_data';
 
 import 'package:benchmark_test/benchmark_test.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
+import 'package:velxodb_benchmarks/fixtures.dart';
+import 'package:velxodb_benchmarks/workload.dart';
 
 /// Keeps results observable so the JIT/AOT cannot elide the work.
 int sink = 0;
 
-const int batch = 100;
-
-DocBuilder newBuilder() => DocBuilder(schemaId: 1, schemaVersion: 1);
-
-/// A realistic chat message: id, conversation, sender, timestamp, text.
-void writeChat(DocBuilder builder) {
-  builder
-    ..putString(1, '01J8Z4K2M3N4P5Q6R7S8T9V0W1')
-    ..putString(2, '01J8Z4K2M3N4P5Q6R7S8T9V0W2')
-    ..putInt(3, 7)
-    ..putInt(4, 1750000000000)
-    ..putString(5, '在吗？今天下午三点开会，别忘了带材料。');
-}
-
-/// The same message written through the batch path (no per-doc allocation).
-void writeChatSink(DocSink sink) {
-  sink
-    ..putString(1, '01J8Z4K2M3N4P5Q6R7S8T9V0W1')
-    ..putString(2, '01J8Z4K2M3N4P5Q6R7S8T9V0W2')
-    ..putInt(3, 7)
-    ..putInt(4, 1750000000000)
-    ..putString(5, '在吗？今天下午三点开会，别忘了带材料。');
-}
-
 void main() {
-  final builder = newBuilder();
+  final builder = DocBuilder(schemaId: 1, schemaVersion: 1);
   writeChat(builder);
   final encoded = builder.finish();
   final view = DocView.parse(encoded.asUint8List());
@@ -47,8 +25,8 @@ void main() {
 
   group('serde', () {
     benchmark('encode.5field', () {
-      final b = newBuilder();
-      for (var i = 0; i < batch; i++) {
+      final b = DocBuilder(schemaId: 1, schemaVersion: 1);
+      for (var i = 0; i < kBatch; i++) {
         b.reset();
         writeChat(b);
         sink += b.finish().length;
@@ -56,7 +34,7 @@ void main() {
     });
 
     benchmark('encode.sink', () {
-      for (var i = 0; i < batch; i++) {
+      for (var i = 0; i < kBatch; i++) {
         if (docSink.length > (1 << 12)) docSink.reset();
         docSink.beginDoc(schemaId: 1, schemaVersion: 1);
         writeChatSink(docSink);
@@ -66,7 +44,7 @@ void main() {
     });
 
     benchmark('decode.getters', () {
-      for (var i = 0; i < batch; i++) {
+      for (var i = 0; i < kBatch; i++) {
         sink =
             (view.getString(1)?.length ?? 0) +
             (view.getString(2)?.length ?? 0) +
@@ -90,7 +68,7 @@ void main() {
     const projection = <int>[1, 2, 3, 4, 5];
 
     benchmark('project.fields', () {
-      for (var i = 0; i < batch; i++) {
+      for (var i = 0; i < kBatch; i++) {
         final values = view.project(schema, projection);
         sink = values.length;
       }
@@ -98,7 +76,7 @@ void main() {
 
     benchmark('decode.singleScan', () {
       var acc = 0;
-      for (var i = 0; i < batch; i++) {
+      for (var i = 0; i < kBatch; i++) {
         final cursor = view.cursor();
         while (cursor.next()) {
           acc += cursor.wireType == VxsWire.varint
@@ -110,29 +88,29 @@ void main() {
     });
 
     benchmark('project.one', () {
-      for (var i = 0; i < batch; i++) {
+      for (var i = 0; i < kBatch; i++) {
         sink += view.getString(5)?.length ?? 0;
       }
     });
 
     final a = StringView.of(
-      Uint8List.fromList(utf8.encode('01J8Z4K2M3N4P5Q6R7S8T9V0W1')),
+      Uint8List.fromList('01J8Z4K2M3N4P5Q6R7S8T9V0W1'.codeUnits),
     );
     final b = StringView.of(
-      Uint8List.fromList(utf8.encode('01J8Z4K2M3N4P5Q6R7S8T9V0W2')),
+      Uint8List.fromList('01J8Z4K2M3N4P5Q6R7S8T9V0W2'.codeUnits),
     );
     benchmark('view.compare', () {
-      for (var i = 0; i < batch; i++) {
+      for (var i = 0; i < kBatch; i++) {
         if (a.compareTo(b) < 0) sink++;
       }
     });
 
-    final kib = Uint8List(1024);
+    final kib = Uint8List(kCrcBytes);
     for (var i = 0; i < kib.length; i++) {
       kib[i] = i % 251;
     }
     benchmark('crc.1KiB', () {
-      for (var i = 0; i < batch; i++) {
+      for (var i = 0; i < kBatch; i++) {
         sink += VxsCrc32c.compute(kib);
       }
     });

@@ -1,17 +1,17 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/storage.dart';
 
 Uint8List k(String value) => Uint8List.fromList(utf8.encode(value));
 
-Bytes message(String text) => (DocBuilder(schemaId: 1)
-      ..putString(1, text)
-      ..putInt(2, text.length))
-    .finish();
+Bytes message(String text) =>
+    (DocBuilder(schemaId: 1)
+          ..putString(1, text)
+          ..putInt(2, text.length))
+        .finish();
 
 SegmentBuilder buildSegment(int count, {int blockTargetSize = 512}) {
   final builder = SegmentBuilder(blockTargetSize: blockTargetSize);
@@ -117,10 +117,7 @@ void main() {
       final bytes = Uint8List.fromList(buildSegment(20).finish().asUint8List());
       // Flip a byte inside the index region.
       bytes[bytes.length - segmentFooterSize - 20] ^= 0xFF;
-      expect(
-        () => SegmentReader(bytes),
-        throwsA(isA<VxsFormatException>()),
-      );
+      expect(() => SegmentReader(bytes), throwsA(isA<VxsFormatException>()));
       // Opting out of verification still parses the header/footer.
       expect(SegmentReader(bytes, verify: false).docCount, 20);
     });

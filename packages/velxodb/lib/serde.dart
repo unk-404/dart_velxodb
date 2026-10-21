@@ -12,6 +12,10 @@
 /// ```
 library;
 
+/// `Bytes` is blit's zero-copy buffer type. Re-exporting it keeps the VXS API
+/// usable without a second import.
+export 'package:blit/blit.dart' show Bytes;
+
 export 'src/serde/builder.dart';
 export 'src/serde/crc32c.dart';
 export 'src/serde/schema.dart';

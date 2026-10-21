@@ -64,19 +64,19 @@ void main() {
   });
 
   test('document checksum verifies and detects corruption', () {
-    final bytes = (DocBuilder()
-          ..putString(1, '在吗')
-          ..putInt(2, 1750000000000))
-        .finish(checksum: true);
+    final bytes =
+        (DocBuilder()
+              ..putString(1, '在吗')
+              ..putInt(2, 1750000000000))
+            .finish(checksum: true);
     final view = DocView.parseVerified(bytes.asUint8List());
     expect(view.getString(1), '在吗');
     expect(view.getInt(2), 1750000000000);
   });
 
   test('StringView compares without decoding', () {
-    StringView view(String s) => StringView.of(
-      Uint8List.fromList(utf8.encode(s)),
-    );
+    StringView view(String s) =>
+        StringView.of(Uint8List.fromList(utf8.encode(s)));
     expect(view('abc').compareTo(view('abd')), lessThan(0));
     expect(view('中文').equalsString('中文'), isTrue);
     expect(view('中文').equalsString('中'), isFalse);

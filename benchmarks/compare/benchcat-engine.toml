@@ -1,7 +1,10 @@
+[font]
+family = "sniglet"
+
 [render]
 title = "velxodb engine vs sled"
-subtitle = "tier A · 100k × 130 B · 3 runs median · flush + reopen before reads"
-footer = "local/CI comparison, not a project standard"
+subtitle = "{platform|local} - commit {commit:short|local} - tier A, 100k x 130 B, median of runs"
+footer = "same 130 B payload, same key sequence, open timed separately"
 width = 960
 kaomoji = ""
 
@@ -19,31 +22,18 @@ color = "#F6BD16"
 
 [[row]]
 id = "engine.import"
-label = "Import 100k values"
-unit = "docs/s"
-group = "Raw key/value"
 
 [[row]]
-group = "Raw key/value"
-id = "engine.get"
-label = "20k point reads"
-unit = "reads/s"
+id = "engine.open"
 
 [[row]]
-group = "Raw key/value"
 id = "engine.reopen"
-label = "Reopen + 1k reads"
-unit = "reads/s"
 
 [[row]]
-group = "Raw key/value"
+id = "engine.get"
+
+[[row]]
 id = "engine.range"
-label = "10k key range scan"
-note = "velxodb engine has no public KV range cursor yet"
-unit = "keys/s"
 
 [[row]]
-group = "Raw key/value"
 id = "engine.disk"
-label = "On-disk size"
-unit = "MB"

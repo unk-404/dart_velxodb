@@ -29,10 +29,11 @@ void main() {
 
   group('document checksum', () {
     test('round trips with a verified trailer', () {
-      final bytes = (DocBuilder(schemaId: 1)
-            ..putString(1, 'hello')
-            ..putInt(2, 42))
-          .finish(checksum: true);
+      final bytes =
+          (DocBuilder(schemaId: 1)
+                ..putString(1, 'hello')
+                ..putInt(2, 42))
+              .finish(checksum: true);
       final view = DocView.parseVerified(bytes.asUint8List());
       expect(view.hasChecksum, isTrue);
       expect(view.getString(1), 'hello');

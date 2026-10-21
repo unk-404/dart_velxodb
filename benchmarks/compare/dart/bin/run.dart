@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:isar_community/isar.dart' hide Query;
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/storage.dart';
@@ -18,8 +17,11 @@ const int warmupReads = 1000;
 /// Both sides write one 130-byte value per key.
 const int targetValueBytes = 130;
 
-final String body =
-    '在吗？今天下午三点开会，别忘了带材料。01J8Z4K2M3N4P5Q6R7S8T9V0W1';
+/// Seed of the shared read sequence. The same indices are used by every engine
+/// and by every run, so a cache-locality accident cannot favour one side.
+const int seed = 0x9E3779B9;
+
+final String body = '在吗？今天下午三点开会，别忘了带材料。01J8Z4K2M3N4P5Q6R7S8T9V0W1';
 
 Uint8List keyOf(int index) =>
     Uint8List.fromList('doc-${index.toString().padLeft(9, '0')}'.codeUnits);
@@ -43,13 +45,29 @@ Uint8List documentFor(int index) {
   throw StateError('cannot pad document to $targetValueBytes bytes');
 }
 
-var seed = 0x9E3779B9;
+/// xorshift32, byte-for-byte the same as `compare/rust/src/main.rs`.
+final class Rng {
+  Rng([int initial = seed]) : _state = initial & 0xFFFFFFFF;
 
-int nextSeed() {
-  seed ^= (seed << 13) & 0xFFFFFFFF;
-  seed ^= seed >> 17;
-  seed ^= (seed << 5) & 0xFFFFFFFF;
-  return seed & 0x7FFFFFFF;
+  int _state;
+
+  int next() {
+    var state = _state;
+    state ^= (state << 13) & 0xFFFFFFFF;
+    state ^= state >> 17;
+    state ^= (state << 5) & 0xFFFFFFFF;
+    _state = state & 0xFFFFFFFF;
+    return state & 0x7FFFFFFF;
+  }
+}
+
+/// The shared key sequence: reopen reads, warm-up reads, then timed reads.
+List<int> readSequence() {
+  final rng = Rng();
+  return <int>[
+    for (var i = 0; i < reopenReads + warmupReads + reads; i++)
+      rng.next() % total,
+  ];
 }
 
 Directory tempDir(String name) {
@@ -86,9 +104,20 @@ void emit(
   );
 }
 
-Future<void> runEngine() async {
+/// Writes the exact 130-byte payload to `.tmp/fixture130.bin` so the sled side
+/// writes the same bytes velxodb writes, not an arbitrary 130-byte blob.
+String writeFixture() {
+  final file = File('${Directory.current.path}/.tmp/fixture130.bin');
+  file.parent.createSync(recursive: true);
+  file.writeAsBytesSync(documentFor(0));
+  return file.path;
+}
+
+Future<void> runEngine(List<int> sequence) async {
   final root = tempDir('velxo_engine');
   var directory = LocalStorageDirectory(root.path);
+
+  // The first open is on an empty database and is not a measured phase.
   var engine = StorageEngine(directory: directory)..openSync();
   final value = Bytes.fromUint8List(documentFor(0));
 
@@ -99,6 +128,7 @@ Future<void> runEngine() async {
       for (var i = offset; i < end; i++) (key: keyOf(i), document: value),
     ]);
   }
+  stopwatch.stop();
   emit(
     'velxodb-engine',
     'import',
@@ -111,12 +141,19 @@ Future<void> runEngine() async {
   engine.closeSync();
   emit('velxodb-engine', 'disk', 0, bytes: directoryBytes(root));
 
+  // Reopen: open is measured on its own line, then the reads.
   directory = LocalStorageDirectory(root.path);
+  final openWatch = Stopwatch()..start();
   engine = StorageEngine(directory: directory)..openSync();
+  openWatch.stop();
+  emit('velxodb-engine', 'open', openWatch.elapsedMicroseconds);
+
+  var cursor = 0;
   stopwatch = Stopwatch()..start();
   for (var i = 0; i < reopenReads; i++) {
-    engine.get(keyOf(nextSeed() % total));
+    engine.get(keyOf(sequence[cursor++]));
   }
+  stopwatch.stop();
   emit(
     'velxodb-engine',
     'reopen',
@@ -125,13 +162,14 @@ Future<void> runEngine() async {
   );
 
   for (var i = 0; i < warmupReads; i++) {
-    engine.get(keyOf(nextSeed() % total));
+    engine.get(keyOf(sequence[cursor++]));
   }
-  stopwatch = Stopwatch()..start();
   var hits = 0;
+  stopwatch = Stopwatch()..start();
   for (var i = 0; i < reads; i++) {
-    if (engine.get(keyOf(nextSeed() % total)) != null) hits++;
+    if (engine.get(keyOf(sequence[cursor++])) != null) hits++;
   }
+  stopwatch.stop();
   if (hits != reads) throw StateError('engine hits $hits != $reads');
   emit('velxodb-engine', 'get', stopwatch.elapsedMicroseconds, entries: reads);
 
@@ -139,9 +177,12 @@ Future<void> runEngine() async {
   root.deleteSync(recursive: true);
 }
 
-Future<void> runDatabase() async {
+Future<void> runDatabase(List<int> sequence) async {
   final root = tempDir('velxo_db');
+
+  // The first open is on an empty database and is not a measured phase.
   var db = VelxoDatabase.openSync(root.path);
+
   var collection = db.collection('docs');
   collection.createIndex(2, VxsType.string);
 
@@ -153,18 +194,25 @@ Future<void> runDatabase() async {
         (key: keyOf(i), value: Bytes.fromUint8List(documentFor(i))),
     ]);
   }
+  stopwatch.stop();
   emit('velxodb-db', 'import', stopwatch.elapsedMicroseconds, entries: total);
 
   db.flushSync();
   await db.close();
   emit('velxodb-db', 'disk', 0, bytes: directoryBytes(root));
 
+  final openWatch = Stopwatch()..start();
   db = VelxoDatabase.openSync(root.path);
+  openWatch.stop();
+  emit('velxodb-db', 'open', openWatch.elapsedMicroseconds);
+
   collection = db.collection('docs');
+  var cursor = 0;
   stopwatch = Stopwatch()..start();
   for (var i = 0; i < reopenReads; i++) {
-    collection.get(keyOf(nextSeed() % total));
+    collection.get(keyOf(sequence[cursor++]));
   }
+  stopwatch.stop();
   emit(
     'velxodb-db',
     'reopen',
@@ -173,18 +221,20 @@ Future<void> runDatabase() async {
   );
 
   for (var i = 0; i < warmupReads; i++) {
-    collection.get(keyOf(nextSeed() % total));
+    collection.get(keyOf(sequence[cursor++]));
   }
-  stopwatch = Stopwatch()..start();
   var hits = 0;
+  stopwatch = Stopwatch()..start();
   for (var i = 0; i < reads; i++) {
-    if (collection.get(keyOf(nextSeed() % total)) != null) hits++;
+    if (collection.get(keyOf(sequence[cursor++])) != null) hits++;
   }
+  stopwatch.stop();
   if (hits != reads) throw StateError('db hits $hits != $reads');
   emit('velxodb-db', 'get', stopwatch.elapsedMicroseconds, entries: reads);
 
   stopwatch = Stopwatch()..start();
   final equality = collection.findSync(Query(where: Predicate.eq(2, 'u1')));
+  stopwatch.stop();
   if (equality.length != 1000) {
     throw StateError('db equality ${equality.length} != 1000');
   }
@@ -202,6 +252,7 @@ Future<void> runDatabase() async {
     to: 'u20',
     includeTo: true,
   );
+  stopwatch.stop();
   if (range.length != 12000) {
     throw StateError('db range ${range.length} != 12000');
   }
@@ -216,11 +267,14 @@ Future<void> runDatabase() async {
   root.deleteSync(recursive: true);
 }
 
-Future<void> runIsar() async {
+Future<void> runIsar(List<int> sequence) async {
   await Isar.initializeIsarCore();
   final root = tempDir('isar_db');
-  var isar = await Isar.open(<CollectionSchema<dynamic>>[DocSchema],
-      directory: root.path);
+
+  // The first open is on an empty database and is not a measured phase.
+  var isar = await Isar.open(<CollectionSchema<dynamic>>[
+    DocSchema,
+  ], directory: root.path);
 
   var stopwatch = Stopwatch()..start();
   for (var offset = 0; offset < total; offset += batch) {
@@ -236,32 +290,55 @@ Future<void> runIsar() async {
       ]);
     });
   }
+  stopwatch.stop();
   emit('isar', 'import', stopwatch.elapsedMicroseconds, entries: total);
 
   await isar.close();
+  // isar is append-only: the live directory keeps its journal, so the fair
+  // analogue of velxodb's flushed segment set is the compacted copy.
   emit('isar', 'disk', 0, bytes: directoryBytes(root));
+  final compacted = File(
+    '${Directory.current.path}/.tmp/isar_compacted_$pid.isar',
+  );
+  if (compacted.existsSync()) compacted.deleteSync();
+  isar = await Isar.open(<CollectionSchema<dynamic>>[
+    DocSchema,
+  ], directory: root.path);
+  await isar.copyToFile(compacted.path);
+  await isar.close();
+  emit('isar', 'disk.compacted', 0, bytes: compacted.lengthSync());
+  compacted.deleteSync();
 
-  isar = await Isar.open(<CollectionSchema<dynamic>>[DocSchema],
-      directory: root.path);
+  final openWatch = Stopwatch()..start();
+  isar = await Isar.open(<CollectionSchema<dynamic>>[
+    DocSchema,
+  ], directory: root.path);
+  openWatch.stop();
+  emit('isar', 'open', openWatch.elapsedMicroseconds);
+
+  var cursor = 0;
   stopwatch = Stopwatch()..start();
   for (var i = 0; i < reopenReads; i++) {
-    isar.docs.getSync((nextSeed() % total) + 1);
+    isar.docs.getSync(sequence[cursor++] + 1);
   }
+  stopwatch.stop();
   emit('isar', 'reopen', stopwatch.elapsedMicroseconds, entries: reopenReads);
 
   for (var i = 0; i < warmupReads; i++) {
-    isar.docs.getSync((nextSeed() % total) + 1);
+    isar.docs.getSync(sequence[cursor++] + 1);
   }
-  stopwatch = Stopwatch()..start();
   var hits = 0;
+  stopwatch = Stopwatch()..start();
   for (var i = 0; i < reads; i++) {
-    if (isar.docs.getSync((nextSeed() % total) + 1) != null) hits++;
+    if (isar.docs.getSync(sequence[cursor++] + 1) != null) hits++;
   }
+  stopwatch.stop();
   if (hits != reads) throw StateError('isar hits $hits != $reads');
   emit('isar', 'get', stopwatch.elapsedMicroseconds, entries: reads);
 
   stopwatch = Stopwatch()..start();
   final equality = isar.docs.filter().senderEqualTo('u1').findAllSync();
+  stopwatch.stop();
   if (equality.length != 1000) {
     throw StateError('isar equality ${equality.length} != 1000');
   }
@@ -273,10 +350,8 @@ Future<void> runIsar() async {
   );
 
   stopwatch = Stopwatch()..start();
-  final range = isar.docs
-      .filter()
-      .senderBetween('u10', 'u20')
-      .findAllSync();
+  final range = isar.docs.filter().senderBetween('u10', 'u20').findAllSync();
+  stopwatch.stop();
   if (range.length != 12000) {
     throw StateError('isar range ${range.length} != 12000');
   }
@@ -292,8 +367,13 @@ Future<void> runIsar() async {
 }
 
 Future<void> main(List<String> args) async {
-  final mode = args.isEmpty ? 'all' : args.first;
-  if (mode == 'engine' || mode == 'all') await runEngine();
-  if (mode == 'db' || mode == 'all') await runDatabase();
-  if (mode == 'isar' || mode == 'all') await runIsar();
+  final mode = args.isEmpty || args.first == 'all' ? 'all' : args.first;
+  // Written before any engine runs so the Rust side can read the same payload.
+  final fixture = writeFixture();
+  stderr.writeln('fixture: $fixture');
+  if (mode == 'fixture') return;
+  final sequence = readSequence();
+  if (mode == 'engine' || mode == 'all') await runEngine(sequence);
+  if (mode == 'db' || mode == 'all') await runDatabase(sequence);
+  if (mode == 'isar' || mode == 'all') await runIsar(sequence);
 }

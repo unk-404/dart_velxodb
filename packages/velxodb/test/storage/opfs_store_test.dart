@@ -3,7 +3,6 @@ library;
 
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/storage.dart';
@@ -12,9 +11,8 @@ Uint8List bytes(String value) => Uint8List.fromList(value.codeUnits);
 
 Uint8List key(String value) => Uint8List.fromList(value.codeUnits);
 
-String? textOf(Bytes? value) => value == null
-    ? null
-    : DocView.parse(value.asUint8List()).getString(1);
+String? textOf(Bytes? value) =>
+    value == null ? null : DocView.parse(value.asUint8List()).getString(1);
 
 void main() {
   test('OPFS store put/get/list/delete survives a reopen', () async {

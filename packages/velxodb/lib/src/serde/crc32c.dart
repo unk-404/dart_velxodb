@@ -27,7 +27,12 @@ abstract final class VxsCrc32c {
   static int update(int crc, Uint8List data, [int start = 0, int? end]) {
     final state = crc ^ 0xFFFFFFFF;
     return _finalize(
-      _update(state < 0 ? state + 0x100000000 : state, data, start, end ?? data.length),
+      _update(
+        state < 0 ? state + 0x100000000 : state,
+        data,
+        start,
+        end ?? data.length,
+      ),
     );
   }
 
@@ -58,12 +63,14 @@ abstract final class VxsCrc32c {
     var i = start;
     final bulkEnd = stop - ((stop - start) & 15);
     while (i < bulkEnd) {
-      final word = data[i] |
+      final word =
+          data[i] |
           (data[i + 1] << 8) |
           (data[i + 2] << 16) |
           (data[i + 3] << 24);
       crc ^= word;
-      crc = t15[crc & 0xFF] ^
+      crc =
+          t15[crc & 0xFF] ^
           t14[(crc >>> 8) & 0xFF] ^
           t13[(crc >>> 16) & 0xFF] ^
           t12[(crc >>> 24) & 0xFF] ^

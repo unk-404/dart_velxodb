@@ -135,7 +135,10 @@ final class BlockReader {
     }
     final flags = buffer[offset + 2];
     if (flags & ~blockFlagCrc32c != 0 || buffer[offset + 3] != 0) {
-      throw VxsFormatException('reserved block header bits set', offset: offset);
+      throw VxsFormatException(
+        'reserved block header bits set',
+        offset: offset,
+      );
     }
     final hasCrc = flags & blockFlagCrc32c != 0;
     final payloadStart = offset + blockHeaderSize;

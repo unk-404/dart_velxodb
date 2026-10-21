@@ -101,12 +101,7 @@ final class _MemTableSource implements _Source {
       _bounds.lower,
       _bounds.upper,
       (key, chunk, offset, length) {
-        _entries.add((
-          key: key,
-          chunk: chunk,
-          offset: offset,
-          length: length,
-        ));
+        _entries.add((key: key, chunk: chunk, offset: offset, length: length));
       },
       includeLower: _bounds.includeLower,
       includeUpper: _bounds.includeUpper,
@@ -122,8 +117,7 @@ final class _MemTableSource implements _Source {
   int get priority => 0;
 
   @override
-  Uint8List? get key =>
-      _index < _entries.length ? _entries[_index].key : null;
+  Uint8List? get key => _index < _entries.length ? _entries[_index].key : null;
 
   @override
   Bytes? get value {

@@ -3,14 +3,14 @@ library;
 
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/storage.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text) => (DocBuilder(schemaId: 1)..putString(1, text)).finish();
+Bytes doc(String text) =>
+    (DocBuilder(schemaId: 1)..putString(1, text)).finish();
 
 MemoryStorageFile walFileOf(MemoryStorageDirectory directory) =>
     directory.openSync(StorageEngine.walFileName) as MemoryStorageFile;
@@ -18,8 +18,7 @@ MemoryStorageFile walFileOf(MemoryStorageDirectory directory) =>
 StorageEngine openEngine(
   MemoryStorageDirectory directory, {
   required Durability durability,
-}) => StorageEngine(directory: directory, durability: durability)
-  ..openSync();
+}) => StorageEngine(directory: directory, durability: durability)..openSync();
 
 void main() {
   group('durability', () {

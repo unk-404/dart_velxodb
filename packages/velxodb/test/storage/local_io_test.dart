@@ -4,20 +4,19 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/storage.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text) => (DocBuilder(schemaId: 1)
-      ..putString(1, text)
-      ..putInt(2, text.length))
-    .finish();
+Bytes doc(String text) =>
+    (DocBuilder(schemaId: 1)
+          ..putString(1, text)
+          ..putInt(2, text.length))
+        .finish();
 
-String textOf(Bytes bytes) =>
-    DocView.parse(bytes.asUint8List()).getString(1)!;
+String textOf(Bytes bytes) => DocView.parse(bytes.asUint8List()).getString(1)!;
 
 void main() {
   late Directory root;
@@ -106,7 +105,10 @@ void main() {
     directory.closeSync(); // release the lock held by setUp
     final path = '${root.path}${Platform.pathSeparator}locked';
     final first = LocalStorageDirectory(path);
-    expect(() => LocalStorageDirectory(path), throwsA(isA<VelxoLockedException>()));
+    expect(
+      () => LocalStorageDirectory(path),
+      throwsA(isA<VelxoLockedException>()),
+    );
     first.closeSync();
 
     final second = LocalStorageDirectory(path);

@@ -10,16 +10,7 @@ StringView viewOf(String value) =>
 void main() {
   group('StringView', () {
     test('compares in code point order', () {
-      final values = <String>[
-        '',
-        'a',
-        'ab',
-        'b',
-        'z',
-        '中',
-        '中文',
-        '😀',
-      ];
+      final values = <String>['', 'a', 'ab', 'b', 'z', '中', '中文', '😀'];
       for (final a in values) {
         for (final b in values) {
           final expected = a.compareTo(b);

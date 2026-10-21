@@ -125,20 +125,20 @@ abstract final class WalBatch {
       final kind = WalOpKind.fromCode(payload[pos++]);
       final keyLength = VxsVarint.decode(payload, pos, payload.length);
       pos = keyLength.next;
-      final keyEnd = pos + keyLength.value;
-      if (keyEnd > payload.length) {
+      if (keyLength.value < 0 || keyLength.value > payload.length - pos) {
         throw VxsFormatException('WAL key overruns the batch', offset: pos);
       }
+      final keyEnd = pos + keyLength.value;
       final key = Uint8List.sublistView(payload, pos, keyEnd);
       pos = keyEnd;
       final valueLength = VxsVarint.decode(payload, pos, payload.length);
       pos = valueLength.next;
       Uint8List? value;
       if (kind == WalOpKind.put) {
-        final valueEnd = pos + valueLength.value;
-        if (valueEnd > payload.length) {
+        if (valueLength.value < 0 || valueLength.value > payload.length - pos) {
           throw VxsFormatException('WAL value overruns the batch', offset: pos);
         }
+        final valueEnd = pos + valueLength.value;
         value = Uint8List.sublistView(payload, pos, valueEnd);
         pos = valueEnd;
       } else if (valueLength.value != 0) {

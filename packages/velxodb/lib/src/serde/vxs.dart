@@ -96,8 +96,7 @@ abstract final class VxsLe {
   /// Reads an unsigned 64-bit little-endian integer.
   ///
   /// On the web this is exact only up to 2^53, like every Dart `int` there.
-  static int u64(Uint8List b, int o) =>
-      u32(b, o) + u32(b, o + 4) * 0x100000000;
+  static int u64(Uint8List b, int o) => u32(b, o) + u32(b, o + 4) * 0x100000000;
 
   /// Writes an unsigned 16-bit little-endian integer.
   static void w16(Uint8List b, int o, int v) {
@@ -137,7 +136,10 @@ abstract final class VxsVarint {
   ///
   /// [value] must be non-negative; signed values go through [zigzag] first.
   static int write(Uint8List out, int offset, int value) {
-    assert(value >= 0, 'varints encode unsigned values; zigzag negatives first');
+    assert(
+      value >= 0,
+      'varints encode unsigned values; zigzag negatives first',
+    );
     var v = value;
     var i = offset;
     while (v >= 0x80) {
@@ -154,11 +156,7 @@ abstract final class VxsVarint {
   /// On the web every Dart `int` is a JS number, so a single `bits * 128^shift`
   /// product loses precision past 2^53; limb accumulation keeps each product
   /// below that limit and composes `hi * 2^32 + lo` exactly.
-  static ({int value, int next}) decode(
-    Uint8List src,
-    int offset,
-    int end,
-  ) {
+  static ({int value, int next}) decode(Uint8List src, int offset, int end) {
     var lo = 0;
     var hi = 0;
     var shift = 0;
@@ -186,13 +184,7 @@ abstract final class VxsVarint {
     throw VxsFormatException('varint longer than 10 bytes', offset: offset);
   }
 
-  static const List<int> _pow2 = <int>[
-    1,
-    128,
-    16384,
-    2097152,
-    268435456,
-  ];
+  static const List<int> _pow2 = <int>[1, 128, 16384, 2097152, 268435456];
 
   /// Maps a signed integer onto an unsigned one, keeping small magnitudes small.
   static int zigzag(int value) => value < 0 ? -2 * value - 1 : 2 * value;

@@ -84,6 +84,7 @@ final class TextIndexDefinition {
     required this.fieldId,
     required this.indexId,
     required this.tokenizer,
+    this.ready = true,
   });
 
   /// Owning collection.
@@ -98,14 +99,24 @@ final class TextIndexDefinition {
   /// Term splitter.
   final Tokenizer tokenizer;
 
+  /// Whether every existing document has been backfilled into this index.
+  final bool ready;
+
+  /// Returns a copy with [ready] changed.
+  TextIndexDefinition withReady(bool value) => TextIndexDefinition(
+    collectionId: collectionId,
+    fieldId: fieldId,
+    indexId: indexId,
+    tokenizer: tokenizer,
+    ready: value,
+  );
+
   /// Tokenizes [text] with this index's tokenizer.
   List<String> tokenize(String text) => tokenizer.tokenize(text);
 
   /// Namespace prefix of this index.
-  Uint8List namespace() => Uint8List.fromList(<int>[
-    (indexId >> 8) & 0xFF,
-    indexId & 0xFF,
-  ]);
+  Uint8List namespace() =>
+      Uint8List.fromList(<int>[(indexId >> 8) & 0xFF, indexId & 0xFF]);
 
   /// Prefix shared by all postings of [term] (terminator included).
   Uint8List termPrefix(String term) {

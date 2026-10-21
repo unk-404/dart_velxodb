@@ -1,269 +1,60 @@
-# Rendered by benchcat (https://github.com/unk-404/benchcat).
+# velxodb headline card: one row per layer.
 #
-# The serde benchmarks run `batch` operations per iteration, so every derived
-# value multiplies throughput back up by that factor.
+# Full data lives in the per-layer cards (`benchmarks/cards/*.toml` ->
+# `assets/benchmarks-format.svg`, `-storage`, `-query`, `-objectstore`).
+#
+# Row order, label, unit and group come from `benchmarks/results/hero.json`,
+# which `tool/normalize.dart` builds from `lib/manifest.dart`; this file only
+# decides which rows appear and how the card looks. There are no formulas here
+# on purpose: a factor that lives in the config cannot be tested.
+[font]
+family = "sniglet"
+
 [render]
 title = "velxodb"
-subtitle = "{platform|local} - commit {commit:short|local}"
-footer = "Generated from {rows} rows"
+subtitle = "{platform|local} - commit {commit:short|local} - JIT micro suite"
+footer = "One row per layer; per-layer cards have the full set"
 width = 920
-max_rows = 28
 kaomoji = ""
+
+[[series]]
+label = "velxodb"
+input = "benchmarks/results/hero.json"
+format = "json"
+color = "#5B8FF9"
 
 [[row]]
 id = "serde encode.5field"
-label = "Encode a 130 B chat doc"
-note = "single-doc builder"
-unit = "MB/s"
-value = "value * 100 * 130 / 1000000"
-group = "VXS format"
-
-[[row]]
-id = "serde encode.sink"
-label = "Encode into a batch sink"
-note = "one buffer, no per-doc allocation"
-unit = "MB/s"
-value = "value * 100 * 130 / 1000000"
-group = "VXS format"
 
 [[row]]
 id = "serde decode.singleScan"
-label = "Scan all 5 fields"
-note = "cursor, no value materialisation"
-unit = "ns/op"
-value = "1000000000 / (value * 100)"
-group = "VXS format"
-
-[[row]]
-id = "serde project.one"
-label = "Project one text field"
-note = "scan + utf8 decode"
-unit = "ns/op"
-value = "1000000000 / (value * 100)"
-group = "VXS format"
-
-[[row]]
-id = "storage engine.get.segment"
-label = "Engine read from segment"
-note = "bloom + binary search"
-unit = "Mops/s"
-value = "value * 100 * 64 / 1000000"
-group = "Storage"
-
-[[row]]
-id = "storage segment.build"
-label = "Build a segment"
-note = "64 docs, sorted index + bloom"
-unit = "Kdocs/s"
-value = "value * 100 * 64 / 1000"
-group = "Storage"
-
-[[row]]
-id = "storage segment.find"
-label = "Segment point lookup"
-note = "bloom + binary search"
-unit = "Mops/s"
-value = "value * 100 * 64 / 1000000"
-group = "Storage"
-
-[[row]]
-id = "storage segment.scan"
-label = "Segment scan"
-unit = "Mdocs/s"
-value = "value * 100 * 64 / 1000000"
-group = "Storage"
-
-[[row]]
-id = "storage memtable.range"
-label = "Memtable range seek"
-note = "1k of 50k entries, skip list"
-unit = "Mdocs/s"
-value = "value * 100 * 1000 / 1000000"
-group = "Storage"
-
-[[row]]
-id = "storage engine.put"
-label = "Engine write path"
-note = "WAL + arena + memtable, sync"
-unit = "Mops/s"
-value = "value * 100 * 64 / 1000000"
-group = "Storage"
-
-[[row]]
-id = "storage engine.get"
-label = "Engine point read"
-note = "memtable hit"
-unit = "Mops/s"
-value = "value * 100 * 64 / 1000000"
-group = "Storage"
-
-[[row]]
-id = "storage memtable.get"
-label = "Memtable lookup"
-unit = "Mops/s"
-value = "value * 100 * 64 / 1000000"
-group = "Storage"
-
-[[row]]
-id = "query collection.get"
-label = "Collection point read"
-note = "segment + memtable"
-unit = "Mops/s"
-value = "value * 100 * 64 / 1000000"
-group = "Query"
-
-[[row]]
-id = "query collection.scan"
-label = "Collection prefix scan"
-note = "64 entries, merged"
-unit = "Kdocs/s"
-value = "value * 100 * 64 / 1000"
-group = "Query"
-
-[[row]]
-id = "query collection.cursor"
-label = "Collection cursor"
-note = "streamed, no result list"
-unit = "Kdocs/s"
-value = "value * 100 * 64 / 1000"
-group = "Query"
-
-[[row]]
-id = "query collection.put.indexed"
-label = "Write with index"
-note = "read-old + index upkeep"
-unit = "Kops/s"
-value = "value * 100 * 64 / 1000"
-group = "Query"
-
-[[row]]
-id = "query collection.indexLookup"
-label = "Index lookup"
-note = "8 hits + verification"
-unit = "Kops/s"
-value = "value * 100 * 8 / 1000"
-group = "Query"
-
-[[row]]
-id = "query collection.indexRange"
-label = "Index range scan"
-note = "24 hits over 8 values"
-unit = "Kops/s"
-value = "value * 100 * 24 / 1000"
-group = "Query"
-
-[[row]]
-id = "query collection.page"
-label = "Paged walk (64 keys)"
-note = "4 pages of 16"
-unit = "Kdocs/s"
-value = "value * 100 * 64 / 1000"
-group = "Query"
-
-[[row]]
-id = "query collection.textSearch"
-label = "Full-text search"
-note = "64 hits, verified"
-unit = "Kdocs/s"
-value = "value * 100 * 64 / 1000"
-group = "Query"
-
-[[row]]
-id = "query graph.link"
-label = "Graph link"
-note = "both directions, 1 frame"
-unit = "Kops/s"
-value = "value * 100 * 64 / 1000"
-group = "Query"
-
-[[row]]
-id = "query graph.outgoing"
-label = "Graph adjacency"
-note = "64-node ring"
-unit = "Kops/s"
-value = "value * 100 * 64 / 1000"
-group = "Query"
 
 [[row]]
 id = "storage block.write"
-label = "Pack a block (20 docs)"
-note = "includes block CRC"
-unit = "MB/s"
-value = "value * 100 * 20 * 130 / 1000000"
-group = "Storage"
 
 [[row]]
-id = "storage block.read"
-label = "Scan a block"
-note = "20 documents"
-unit = "Mdocs/s"
-value = "value * 100 * 20 / 1000000"
-group = "Storage"
+id = "storage engine.put"
 
 [[row]]
-id = "storage wal.frame"
-label = "Encode a WAL frame"
-note = "1 doc + CRC32C"
-unit = "Kops/s"
-value = "value * 100 / 1000"
-group = "Storage"
+id = "storage engine.get.segment"
 
 [[row]]
-id = "storage wal.batch"
-label = "Decode a WAL batch"
-unit = "Kops/s"
-value = "value * 100 / 1000"
-group = "Storage"
+id = "storage memtable.range"
 
 [[row]]
-id = "serde view.compare"
-label = "Compare 26 B keys (zero-copy)"
-note = "StringView vs String"
-unit = "ns/op"
-value = "1000000000 / (value * 100)"
-group = "VXS format"
+id = "query collection.get"
 
 [[row]]
-id = "serde crc.1KiB"
-label = "CRC-32C over 1 KiB"
-unit = "MB/s"
-value = "value * 100 * 1024 / 1000000"
-group = "VXS format"
+id = "query collection.indexLookup"
 
 [[row]]
-id = "serde project.fields"
-label = "Project all 5 fields"
-note = "one scan, zero-copy strings"
-unit = "ns/op"
-value = "1000000000 / (value * 100)"
-group = "VXS format"
+id = "query collection.indexRange"
 
 [[row]]
-id = "serde decode.getters"
-label = "Read 3 fields via getters"
-note = "O(n^2) convenience path"
-unit = "ns/op"
-value = "1000000000 / (value * 100)"
-group = "VXS format"
+id = "query collection.textSearch"
 
 [[row]]
-id = "format bytes.mut.write"
-label = "BytesMut write"
-note = "blit primitives"
-unit = "Mops/s"
-value = "value / 1000000"
-group = "Primitives"
+id = "query graph.outgoing"
 
 [[row]]
-id = "format zstd.encode"
-label = "zstd encode"
-unit = "Mops/s"
-value = "value / 1000000"
-group = "Primitives"
-
-[[row]]
-id = "format zstd.decode"
-label = "zstd decode"
-unit = "Mops/s"
-value = "value / 1000000"
-group = "Primitives"
+id = "query reference.put"

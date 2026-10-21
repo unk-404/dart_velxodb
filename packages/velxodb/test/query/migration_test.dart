@@ -4,17 +4,17 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/velxodb.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes v1Doc(String text) => (DocBuilder(schemaId: 1, schemaVersion: 1)
-      ..putString(1, text)
-      ..putInt(9, 99))
-    .finish();
+Bytes v1Doc(String text) =>
+    (DocBuilder(schemaId: 1, schemaVersion: 1)
+          ..putString(1, text)
+          ..putInt(9, 99))
+        .finish();
 
 /// v1 -> v2: keep every field, insert field 7 between 6 and 8.
 MigrationStep addField7(int value) => MigrationStep(
@@ -78,10 +78,7 @@ void main() {
       );
       expect(second.migrated, 0);
       expect(second.skipped, 1);
-      expect(
-        DocView.parse(collection.get(k('a'))!.asUint8List()).getInt(7),
-        1,
-      );
+      expect(DocView.parse(collection.get(k('a'))!.asUint8List()).getInt(7), 1);
     });
 
     test('pages with a resume token', () {
@@ -108,9 +105,10 @@ void main() {
     });
 
     test('skips documents already at the target version', () {
-      final current = (DocBuilder(schemaId: 1, schemaVersion: 2)
-            ..putString(1, 'new'))
-          .finish();
+      final current = (DocBuilder(
+        schemaId: 1,
+        schemaVersion: 2,
+      )..putString(1, 'new')).finish();
       collection.putSync(k('new'), current);
       collection.putSync(k('old'), v1Doc('old'));
 

@@ -19,47 +19,66 @@ const int formatMinor = 0;
 /// Name of the root format stamp.
 const String formatFileName = 'FORMAT';
 
+/// Temporary file used to replace the stamp atomically.
+const String formatTempFileName = 'FORMAT.tmp';
+
 /// Magic bytes of the format stamp.
 const List<int> formatMagic = <int>[0x56, 0x58, 0x46, 0x4D]; // "VXFM"
+
+/// Encodes the current format stamp as 12 bytes.
+Uint8List encodeFormatStamp() {
+  final bytes = Uint8List(12);
+  bytes.setRange(0, 4, formatMagic);
+  VxsLe.w16(bytes, 4, formatMajor);
+  VxsLe.w16(bytes, 6, formatMinor);
+  VxsLe.w32(bytes, 8, VxsCrc32c.compute(bytes, 0, 8));
+  return bytes;
+}
+
+/// Decodes a format stamp, validating its length, magic and checksum.
+({int major, int minor}) decodeFormatStamp(Uint8List bytes) {
+  if (bytes.length != 12) {
+    throw const VelxoCorruptException('FORMAT stamp has an invalid length');
+  }
+  for (var i = 0; i < 4; i++) {
+    if (bytes[i] != formatMagic[i]) {
+      throw const VelxoCorruptException('FORMAT stamp has a bad magic');
+    }
+  }
+  final expected = VxsLe.u32(bytes, 8);
+  if (VxsCrc32c.compute(bytes, 0, 8) != expected) {
+    throw const VelxoCorruptException('FORMAT stamp checksum mismatch');
+  }
+  return (major: VxsLe.u16(bytes, 4), minor: VxsLe.u16(bytes, 6));
+}
 
 /// Reads the format stamp, or `null` when the database predates stamping.
 ({int major, int minor})? readFormatStamp(SyncStorageDirectory directory) {
   if (!directory.existsSync(formatFileName)) return null;
   final file = directory.openSync(formatFileName, create: false);
   try {
-    final bytes = file.readAllSync();
-    if (bytes.length != 12) {
-      throw const VelxoCorruptException('FORMAT stamp has an invalid length');
-    }
-    for (var i = 0; i < 4; i++) {
-      if (bytes[i] != formatMagic[i]) {
-        throw const VelxoCorruptException('FORMAT stamp has a bad magic');
-      }
-    }
-    final expected = VxsLe.u32(bytes, 8);
-    if (VxsCrc32c.compute(bytes, 0, 8) != expected) {
-      throw const VelxoCorruptException('FORMAT stamp checksum mismatch');
-    }
-    return (major: VxsLe.u16(bytes, 4), minor: VxsLe.u16(bytes, 6));
+    return decodeFormatStamp(file.readAllSync());
   } finally {
     file.closeSync();
   }
 }
 
-/// Writes the current format stamp.
+/// Writes the current format stamp atomically.
+///
+/// The stamp is written to a temporary file and renamed over [formatFileName],
+/// so a crash can leave either the old stamp or the new one — never a half
+/// written 12-byte file. A torn stamp would otherwise make an otherwise healthy
+/// database unreadable, which is exactly what a version marker must not do.
 void writeFormatStamp(SyncStorageDirectory directory) {
-  final bytes = Uint8List(12);
-  bytes.setRange(0, 4, formatMagic);
-  VxsLe.w16(bytes, 4, formatMajor);
-  VxsLe.w16(bytes, 6, formatMinor);
-  VxsLe.w32(bytes, 8, VxsCrc32c.compute(bytes, 0, 8));
-  final file = directory.openSync(formatFileName);
+  final bytes = encodeFormatStamp();
+  final file = directory.openSync(formatTempFileName);
   try {
     file.writeAllSync(bytes);
     file.flushSync();
   } finally {
     file.closeSync();
   }
+  directory.renameSync(formatTempFileName, formatFileName);
 }
 
 /// Enforces the version policy before a database is opened.

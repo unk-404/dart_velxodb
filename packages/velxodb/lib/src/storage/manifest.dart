@@ -115,11 +115,7 @@ final class Manifest {
       final byteLength = VxsLe.u32(bytes, pos);
       pos += 4;
       segments.add(
-        SegmentInfo(
-          name: name,
-          entryCount: entryCount,
-          byteLength: byteLength,
-        ),
+        SegmentInfo(name: name, entryCount: entryCount, byteLength: byteLength),
       );
     }
     if (pos != bodyEnd) {
@@ -138,22 +134,23 @@ final class ManifestStore {
   final SyncStorageDirectory directory;
 
   /// Names of the two slots, indexed by `generation % 2`.
-  static const List<String> slotNames = <String>[
-    'MANIFEST-0',
-    'MANIFEST-1',
-  ];
+  static const List<String> slotNames = <String>['MANIFEST-0', 'MANIFEST-1'];
 
   /// Loads the newest valid manifest, or `null` when the database is empty.
   ///
   /// A single torn slot is tolerated (the other slot is authoritative). If
-  /// manifest files exist but none decodes, the database is corrupt rather than
-  /// empty; returning `null` there would silently drop every document.
-  Manifest? loadSync() {
+  /// [allowTornSingleSlot] is true and exactly one slot file exists but does
+  /// not decode, `null` is returned so the caller can recover from the WAL:
+  /// that is the signature of a crash during the very first manifest write,
+  /// before the WAL was truncated. With two bad slot files the database is
+  /// corrupt, not empty; returning `null` there would silently drop every
+  /// document.
+  Manifest? loadSync({bool allowTornSingleSlot = false}) {
     Manifest? best;
-    var sawFile = false;
+    var sawFile = 0;
     for (var slot = 0; slot < slotNames.length; slot++) {
       if (!directory.existsSync(slotNames[slot])) continue;
-      sawFile = true;
+      sawFile++;
       SyncStorageFile? file;
       try {
         file = directory.openSync(slotNames[slot]);
@@ -170,7 +167,8 @@ final class ManifestStore {
         file?.closeSync();
       }
     }
-    if (sawFile && best == null) {
+    if (best == null && sawFile > 0) {
+      if (sawFile == 1 && allowTornSingleSlot) return null;
       throw const VelxoCorruptException(
         'manifest files exist but none decodes; refusing to open',
       );
@@ -179,8 +177,12 @@ final class ManifestStore {
   }
 
   /// Writes [segments] as the next generation into the alternating slot.
+  ///
+  /// A previous save that failed before its bytes landed can leave one empty
+  /// slot; that must not make every later save fail, so a single unusable slot
+  /// is tolerated here. Two unusable slots still raise through [loadSync].
   Manifest saveSync(List<SegmentInfo> segments) {
-    final current = loadSync();
+    final current = loadSync(allowTornSingleSlot: true);
     final generation = (current?.generation ?? 0) + 1;
     final manifest = Manifest(generation: generation, segments: segments);
     final file = directory.openSync(slotNames[generation % 2]);

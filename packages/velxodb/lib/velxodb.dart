@@ -11,7 +11,7 @@ library;
 export 'src/backup/backup.dart';
 export 'src/errors.dart';
 export 'src/query/catalog.dart' show Catalog, CollectionEntry;
-export 'src/query/collection.dart' show Collection;
+export 'src/query/collection.dart' show Collection, ReferenceIssue;
 export 'src/query/cursor.dart' show CollectionCursor;
 export 'src/query/database.dart';
 export 'src/query/fulltext.dart'
@@ -26,13 +26,11 @@ export 'src/query/graph.dart'
 export 'src/query/index.dart' show IndexCatalog, IndexDefinition;
 export 'src/query/migration.dart'
     show CollectionMigration, MigrationReport, MigrationStep, copyFields;
-export 'src/query/plan.dart'
-    show Predicate, Query, QueryPlan, ScanStrategy;
+export 'src/query/plan.dart' show Predicate, Query, QueryPlan, ScanStrategy;
 export 'src/query/reference.dart'
     show CollectionCatalog, OnDelete, ReferenceCatalog, ReferenceDefinition;
 export 'src/query/relation.dart' show RelationDefinition;
-export 'src/query/schema.dart'
-    show DocumentSchema, Field, TypedCollection;
+export 'src/query/schema.dart' show DocumentSchema, Field, TypedCollection;
 export 'src/query/types.dart' show ScanEntry, ScanPage;
 export 'src/query/velxo.dart';
 export 'src/upgrade_journal.dart';
@@ -41,4 +39,4 @@ export 'src/web/web_database.dart';
 export 'src/worker/worker_client.dart';
 
 /// Semantic version of the package.
-const String velxodbVersion = '0.1.0';
+const String velxodbVersion = '1.0.0';

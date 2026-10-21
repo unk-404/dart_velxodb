@@ -4,21 +4,20 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/velxodb.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes userDoc(String id) => (DocBuilder(schemaId: 2)
-      ..putString(1, id))
-    .finish();
+Bytes userDoc(String id) =>
+    (DocBuilder(schemaId: 2)..putString(1, id)).finish();
 
-Bytes messageDoc(String id, String sender) => (DocBuilder(schemaId: 1)
-      ..putString(1, id)
-      ..putString(3, sender))
-    .finish();
+Bytes messageDoc(String id, String sender) =>
+    (DocBuilder(schemaId: 1)
+          ..putString(1, id)
+          ..putString(3, sender))
+        .finish();
 
 void main() {
   late Directory root;
@@ -58,7 +57,10 @@ void main() {
       messages.createReference(3, 'users');
       messages.putSync(k('m1'), messageDoc('m1', 'u1'));
 
-      expect(() => users.deleteSync(k('u1')), throwsStateError);
+      expect(
+        () => users.deleteSync(k('u1')),
+        throwsA(isA<VelxoConstraintException>()),
+      );
       expect(users.get(k('u1')), isNotNull);
 
       messages.deleteSync(k('m1'));
@@ -86,7 +88,9 @@ void main() {
       users.enforceReferences = true;
       follows.putSync(
         k('f1'),
-        (DocBuilder(schemaId: 3)..putString(1, 'u1')..putString(2, 'u2'))
+        (DocBuilder(schemaId: 3)
+              ..putString(1, 'u1')
+              ..putString(2, 'u2'))
             .finish(),
       );
       users.putSync(k('u2'), userDoc('u2'));
@@ -102,7 +106,7 @@ void main() {
 
       expect(
         () => messages.putSync(k('m1'), messageDoc('m1', 'ghost')),
-        throwsStateError,
+        throwsA(isA<VelxoConstraintException>()),
       );
       messages.putSync(k('m1'), messageDoc('m1', 'u1'));
       expect(messages.get(k('m1')), isNotNull);
@@ -118,7 +122,10 @@ void main() {
       messages = db.collection('messages');
       expect(messages.references.containsKey(3), isTrue);
       expect(messages.references[3]?.onDelete, OnDelete.restrict);
-      expect(() => users.deleteSync(k('u1')), throwsStateError);
+      expect(
+        () => users.deleteSync(k('u1')),
+        throwsA(isA<VelxoConstraintException>()),
+      );
     });
   });
 }

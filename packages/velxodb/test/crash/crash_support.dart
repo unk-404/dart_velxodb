@@ -33,11 +33,7 @@ Uint8List readFile(SyncStorageDirectory directory, String name) {
   return Uint8List.fromList(file.readAllSync());
 }
 
-void writeFile(
-  SyncStorageDirectory directory,
-  String name,
-  Uint8List bytes,
-) {
+void writeFile(SyncStorageDirectory directory, String name, Uint8List bytes) {
   final file = directory.openSync(name);
   file.writeAllSync(bytes);
 }

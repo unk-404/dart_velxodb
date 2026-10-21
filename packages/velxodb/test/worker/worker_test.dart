@@ -13,9 +13,8 @@ Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 Uint8List doc(String text) =>
     (DocBuilder(schemaId: 1)..putString(1, text)).finish().asUint8List();
 
-String? textOf(Uint8List? bytes) => bytes == null
-    ? null
-    : DocView.parse(bytes).getString(1);
+String? textOf(Uint8List? bytes) =>
+    bytes == null ? null : DocView.parse(bytes).getString(1);
 
 void main() {
   group('worker', () {
@@ -32,35 +31,33 @@ void main() {
       if (root.existsSync()) root.deleteSync(recursive: true);
     });
 
-    test('put, get, page, delete and check cross the isolate boundary', () async {
-      for (var i = 0; i < 10; i++) {
-        await worker.put('items', k('k$i'), doc('value-$i'));
-      }
-      expect(textOf(await worker.get('items', k('k3'))), 'value-3');
+    test(
+      'put, get, page, delete and check cross the isolate boundary',
+      () async {
+        for (var i = 0; i < 10; i++) {
+          await worker.put('items', k('k$i'), doc('value-$i'));
+        }
+        expect(textOf(await worker.get('items', k('k3'))), 'value-3');
 
-      final first = await worker.page('items', limit: 4);
-      expect(first.entries, hasLength(4));
-      expect(first.next, isNotNull);
+        final first = await worker.page('items', limit: 4);
+        expect(first.entries, hasLength(4));
+        expect(first.next, isNotNull);
 
-      final second = await worker.page(
-        'items',
-        after: first.next,
-        limit: 10,
-      );
-      expect(second.entries, hasLength(6));
+        final second = await worker.page('items', after: first.next, limit: 10);
+        expect(second.entries, hasLength(6));
 
-      await worker.delete('items', k('k0'));
-      expect(await worker.get('items', k('k0')), isNull);
+        await worker.delete('items', k('k0'));
+        expect(await worker.get('items', k('k0')), isNull);
 
-      final report = await worker.check();
-      expect(report.ok, isTrue);
-      expect(report.stats['collections'], greaterThan(0));
-    });
+        final report = await worker.check();
+        expect(report.ok, isTrue);
+        expect(report.stats['collections'], greaterThan(0));
+      },
+    );
 
     test('concurrent requests are serialized by the worker', () async {
       await Future.wait(<Future<void>>[
-        for (var i = 0; i < 200; i++)
-          worker.put('bulk', k('k$i'), doc('v$i')),
+        for (var i = 0; i < 200; i++) worker.put('bulk', k('k$i'), doc('v$i')),
       ]);
       final page = await worker.page('bulk', limit: 500);
       expect(page.entries, hasLength(200));

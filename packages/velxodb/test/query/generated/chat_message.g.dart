@@ -49,21 +49,28 @@ final class ChatMessage {
 
   /// Wire id of `id`.
   static const int _idId = 1;
+
   /// Wire id of `conversationId`.
   static const int _conversationIdId = 2;
+
   /// Wire id of `senderId`.
   static const int _senderIdId = 3;
+
   /// Wire id of `createdAt`.
   static const int _createdAtId = 4;
+
   /// Wire id of `body`.
   static const int _bodyId = 5;
+
   /// Wire id of `edited`.
   static const int _editedId = 6;
+
   /// Wire id of `priority`.
   static const int _priorityId = 7;
 
   /// Primary key bytes for this model.
-  static Uint8List keyOf(ChatMessage value) => Uint8List.fromList(utf8.encode(value.id));
+  static Uint8List keyOf(ChatMessage value) =>
+      Uint8List.fromList(utf8.encode(value.id));
 
   /// Writes [value] into [builder].
   static void encodeInto(ChatMessage value, DocBuilder builder) {
@@ -93,7 +100,11 @@ final class ChatMessage {
     collection.createIndex(_conversationIdId, VxsType.string);
     collection.createIndex(_senderIdId, VxsType.string);
     collection.createIndex(_createdAtId, VxsType.int64);
-    collection.createReference(_senderIdId, 'users', onDelete: OnDelete.restrict);
+    collection.createReference(
+      _senderIdId,
+      'users',
+      onDelete: OnDelete.restrict,
+    );
   }
 
   /// Opens the typed collection and ensures declared indexes.

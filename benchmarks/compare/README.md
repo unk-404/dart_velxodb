@@ -35,10 +35,20 @@ CI does exactly this on Linux and commits the two SVGs on `main`.
   (`putManySync`, `writeTxnSync` + `putAllSync`, `apply_batch`).
 - Every read/query phase runs after flush + close + reopen, so no engine serves
   from a warm memtable; a 1k-read warm-up precedes the timed reads.
-- 3 runs per suite; reports carry the median and the semi-range (`rme_pct`).
-- Tier A writes the same 130-byte value for velxodb and sled.
+- Opening is measured as its own phase: the stopwatch starts before `open` and
+  stops before the first read, for every engine.
+- All engines read the same deterministic key sequence (one seed, one xorshift
+  shared with the Rust side); the engine order is shuffled per run so thermal
+  drift cannot systematically favour one side.
+- 3 runs per suite; reports carry the median and the semi-range (stored as
+  `semi_range_pct`, printed as `±` on the cards).
+- Tier A writes the same 130-byte payload on both sides: the Dart harness dumps
+  it to `.tmp/fixture130.bin` and the sled side writes those exact bytes.
+- On-disk size is sampled after flush + close; isar additionally reports its
+  compacted copy (`copyToFile`) because its live directory keeps an append-only
+  journal.
 - Result sets are verified: equality returns 1,000 rows, the closed range
-  12,000 rows; the harness throws otherwise.
+  12,000 rows, and every timed read must hit; the harness throws otherwise.
 
 ## Caveats (deliberately visible)
 
@@ -60,5 +70,6 @@ CI does exactly this on Linux and commits the two SVGs on `main`.
 ## CI
 
 The `compare` job in `.github/workflows/ci.yml` downloads the isar Linux core,
-runs both suites, renders both cards and uploads them; the `assets` job commits
-all charts to `main`.
+runs both suites with `python3 run.py`, renders both cards and uploads them with
+the raw `out/*.json`; the `assets` job commits all charts to `main`. The job is
+pinned to the same Dart SDK as the rest of the matrix.

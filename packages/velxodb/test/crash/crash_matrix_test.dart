@@ -1,9 +1,9 @@
+@Tags(<String>['crash'])
 @TestOn('vm')
 library;
 
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/storage.dart';
@@ -12,7 +12,8 @@ import 'crash_support.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text) => (DocBuilder(schemaId: 1)..putString(1, text)).finish();
+Bytes doc(String text) =>
+    (DocBuilder(schemaId: 1)..putString(1, text)).finish();
 
 String? textOf(Bytes? bytes) =>
     bytes == null ? null : DocView.parse(bytes.asUint8List()).getString(1);
@@ -46,7 +47,8 @@ void main() {
         );
         final reopenedDirectory = MemoryStorageDirectory();
         restore(reopenedDirectory, files);
-        final reopened = StorageEngine(directory: reopenedDirectory)..openSync();
+        final reopened = StorageEngine(directory: reopenedDirectory)
+          ..openSync();
         expect(textOf(reopened.get(k('a'))), 'alpha', reason: 'cut=$cut');
         expect(textOf(reopened.get(k('b'))), 'beta', reason: 'cut=$cut');
 
@@ -72,11 +74,7 @@ void main() {
       engine.closeSync();
 
       final ghost = SegmentBuilder()..add(k('z'), doc('ghost'));
-      writeFile(
-        directory,
-        'SEG-000099.seg',
-        ghost.finish().asUint8List(),
-      );
+      writeFile(directory, 'SEG-000099.seg', ghost.finish().asUint8List());
 
       final reopened = StorageEngine(directory: directory)..openSync();
       expect(textOf(reopened.get(k('v'))), 'v1');
@@ -91,32 +89,34 @@ void main() {
       reopened.closeSync();
     });
 
-    test('replaying the pre-truncate WAL after a manifest commit is idempotent',
-        () {
-      final directory = MemoryStorageDirectory();
-      final engine = StorageEngine(directory: directory)..openSync();
-      engine.putSync(k('v'), doc('v1'));
-      final walBeforeFlush = readFile(directory, StorageEngine.walFileName);
+    test(
+      'replaying the pre-truncate WAL after a manifest commit is idempotent',
+      () {
+        final directory = MemoryStorageDirectory();
+        final engine = StorageEngine(directory: directory)..openSync();
+        engine.putSync(k('v'), doc('v1'));
+        final walBeforeFlush = readFile(directory, StorageEngine.walFileName);
 
-      engine.flushSync();
-      engine.closeSync();
+        engine.flushSync();
+        engine.closeSync();
 
-      // The crash window: manifest committed, segment durable, WAL not yet
-      // truncated.
-      writeFile(directory, StorageEngine.walFileName, walBeforeFlush);
+        // The crash window: manifest committed, segment durable, WAL not yet
+        // truncated.
+        writeFile(directory, StorageEngine.walFileName, walBeforeFlush);
 
-      var reopened = StorageEngine(directory: directory)..openSync();
-      expect(textOf(reopened.get(k('v'))), 'v1');
-      expect(reopened.checkSync().ok, isTrue);
+        var reopened = StorageEngine(directory: directory)..openSync();
+        expect(textOf(reopened.get(k('v'))), 'v1');
+        expect(reopened.checkSync().ok, isTrue);
 
-      reopened.flushSync();
-      reopened.closeSync();
+        reopened.flushSync();
+        reopened.closeSync();
 
-      reopened = StorageEngine(directory: directory)..openSync();
-      expect(textOf(reopened.get(k('v'))), 'v1');
-      expect(reopened.checkSync().ok, isTrue);
-      reopened.closeSync();
-    });
+        reopened = StorageEngine(directory: directory)..openSync();
+        expect(textOf(reopened.get(k('v'))), 'v1');
+        expect(reopened.checkSync().ok, isTrue);
+        reopened.closeSync();
+      },
+    );
 
     test('a torn newest manifest falls back to the previous generation', () {
       final directory = MemoryStorageDirectory();
@@ -148,24 +148,26 @@ void main() {
       reopened.closeSync();
     });
 
-    test('a truncated segment referenced by the manifest is typed corruption',
-        () {
-      final directory = MemoryStorageDirectory();
-      final engine = StorageEngine(directory: directory)..openSync();
-      engine.putSync(k('v'), doc('v1'));
-      engine.flushSync();
-      engine.closeSync();
+    test(
+      'a truncated segment referenced by the manifest is typed corruption',
+      () {
+        final directory = MemoryStorageDirectory();
+        final engine = StorageEngine(directory: directory)..openSync();
+        engine.putSync(k('v'), doc('v1'));
+        engine.flushSync();
+        engine.closeSync();
 
-      final segment = directory
-          .listSync()
-          .firstWhere((name) => name.startsWith(StorageEngine.segmentPrefix));
-      final bytes = readFile(directory, segment);
-      writeFile(directory, segment, bytes.sublist(0, bytes.length - 8));
+        final segment = directory.listSync().firstWhere(
+          (name) => name.startsWith(StorageEngine.segmentPrefix),
+        );
+        final bytes = readFile(directory, segment);
+        writeFile(directory, segment, bytes.sublist(0, bytes.length - 8));
 
-      expect(
-        () => StorageEngine(directory: directory)..openSync(),
-        throwsA(isA<VelxoCorruptException>()),
-      );
-    });
+        expect(
+          () => StorageEngine(directory: directory)..openSync(),
+          throwsA(isA<VelxoCorruptException>()),
+        );
+      },
+    );
   });
 }

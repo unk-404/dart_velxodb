@@ -13,7 +13,14 @@ abstract interface class IndexCatalog {
   List<IndexDefinition> indexesFor(int collectionId);
 
   /// Registers an index and persists the catalog.
-  IndexDefinition registerIndex(int collectionId, int fieldId, VxsType type);
+  ///
+  /// [ready] is `false` while a backfill is in progress.
+  IndexDefinition registerIndex(
+    int collectionId,
+    int fieldId,
+    VxsType type, {
+    bool ready = true,
+  });
 }
 
 /// A secondary index on one field of one collection.
@@ -28,6 +35,7 @@ final class IndexDefinition {
     required this.fieldId,
     required this.type,
     required this.indexId,
+    this.ready = true,
   });
 
   /// Owning collection id.
@@ -41,6 +49,22 @@ final class IndexDefinition {
 
   /// Two-byte namespace id used in the engine.
   final int indexId;
+
+  /// Whether every existing document has been backfilled into this index.
+  ///
+  /// A definition is created with `ready: false`, backfilled, then marked ready.
+  /// Queries ignore a definition that is not ready; opening a database finishes
+  /// any backfill that a crash interrupted.
+  final bool ready;
+
+  /// Returns a copy with [ready] changed.
+  IndexDefinition withReady(bool value) => IndexDefinition(
+    collectionId: collectionId,
+    fieldId: fieldId,
+    type: type,
+    indexId: indexId,
+    ready: value,
+  );
 
   /// Two-byte namespace prefix shared by every entry of this index.
   Uint8List get namespacePrefix =>
@@ -73,6 +97,7 @@ final class IndexDefinition {
   /// Compares two values of this index's type.
   int compareValues(Object a, Object b) => switch (type) {
     VxsType.string => (a as String).compareTo(b as String),
+    VxsType.boolean => (a == true ? 1 : 0).compareTo(b == true ? 1 : 0),
     _ => (a as int).compareTo(b as int),
   };
 
@@ -177,10 +202,7 @@ Uint8List encodeOrderedString(String value) {
 /// Decodes one ordered string starting at [offset].
 ///
 /// Returns the value and how many bytes it occupied (terminator included).
-({String value, int length}) decodeOrderedString(
-  Uint8List bytes,
-  int offset,
-) {
+({String value, int length}) decodeOrderedString(Uint8List bytes, int offset) {
   final out = <int>[];
   var position = offset;
   while (true) {

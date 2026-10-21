@@ -66,14 +66,20 @@ final class SegmentBuilder {
   int get payloadSize => _blocks.length;
 
   /// Adds one document under [key].
+  ///
+  /// Keys are capped at 65535 bytes: the segment index stores the key length in
+  /// a `u16`, and silently truncating it would corrupt the index.
   void add(Uint8List key, Bytes document) {
+    _checkKeyLength(key);
     if (_block == null) {
       _block = BlockWriter(targetSize: blockTargetSize);
       _blockBase = _blocks.length;
     }
     final relative = _block!.append(document);
     _keys.add(Uint8List.fromList(key));
-    _docOffsets.add(segmentHeaderSize + _blockBase + blockHeaderSize + relative);
+    _docOffsets.add(
+      segmentHeaderSize + _blockBase + blockHeaderSize + relative,
+    );
     _docCount++;
     if (_block!.isFull) {
       _finishBlock();
@@ -82,9 +88,20 @@ final class SegmentBuilder {
 
   /// Records that [key] was deleted, without storing a document.
   void addTombstone(Uint8List key) {
+    _checkKeyLength(key);
     _keys.add(Uint8List.fromList(key));
     _docOffsets.add(segmentTombstone);
     _docCount++;
+  }
+
+  static void _checkKeyLength(Uint8List key) {
+    if (key.length > 0xFFFF) {
+      throw ArgumentError.value(
+        key.length,
+        'key.length',
+        'keys are limited to 65535 bytes by the segment index',
+      );
+    }
   }
 
   /// Builds the segment and returns its bytes.
@@ -92,14 +109,26 @@ final class SegmentBuilder {
     _finishBlock();
 
     final order = List<int>.generate(_keys.length, (i) => i)
-      ..sort((a, b) => StringView.compareRanges(
-        _keys[a], 0, _keys[a].length, _keys[b], 0, _keys[b].length,
-      ));
+      ..sort(
+        (a, b) => StringView.compareRanges(
+          _keys[a],
+          0,
+          _keys[a].length,
+          _keys[b],
+          0,
+          _keys[b].length,
+        ),
+      );
     for (var i = 1; i < order.length; i++) {
       final previous = _keys[order[i - 1]];
       final current = _keys[order[i]];
       if (StringView.compareRanges(
-            previous, 0, previous.length, current, 0, current.length,
+            previous,
+            0,
+            previous.length,
+            current,
+            0,
+            current.length,
           ) ==
           0) {
         throw ArgumentError('duplicate key in segment');
@@ -218,14 +247,21 @@ final class SegmentReader {
     this._entryOffsetsStart,
     this._entriesStart,
     this._bloom,
+    this._verifiedBlocks,
   );
 
   /// Parses a segment starting at [offset].
+  ///
+  /// With [verifyBlocksOnRead] every document is preceded by a one-time check
+  /// of its block's CRC: the first read that touches a block pays one checksum
+  /// pass over that block, later reads only a bitmap lookup. Without it a
+  /// single flipped bit inside a document body would be returned as data.
   factory SegmentReader(
     Uint8List buffer, {
     int offset = 0,
     int? length,
     bool verify = true,
+    bool verifyBlocksOnRead = true,
   }) {
     final end = length == null ? buffer.length : offset + length;
     if (end - offset < segmentHeaderSize + segmentFooterSize) {
@@ -249,10 +285,26 @@ final class SegmentReader {
     final bloomOffset = VxsLe.u32(buffer, footerStart + 16);
     final bloomLength = VxsLe.u32(buffer, footerStart + 20);
     final storedCrc = VxsLe.u32(buffer, footerStart + 24);
-    if (indexOffset + indexLength > footerStart ||
+    if (tableOffset < segmentHeaderSize ||
+        indexOffset + indexLength > footerStart ||
         bloomOffset + bloomLength > footerStart ||
         tableOffset + blockCount * 4 > footerStart) {
-      throw VxsFormatException('segment metadata out of bounds', offset: offset);
+      throw VxsFormatException(
+        'segment metadata out of bounds',
+        offset: offset,
+      );
+    }
+    // The metadata checksum covers the block table, index and bloom filter but
+    // not the segment header, where blockCount lives. Requiring the three
+    // regions to tile exactly is what keeps a flipped blockCount from steering
+    // the block table into the index and bypassing the on-read block checksum.
+    if (tableOffset + blockCount * 4 != indexOffset ||
+        indexOffset + indexLength != bloomOffset ||
+        bloomOffset + bloomLength != footerStart) {
+      throw VxsFormatException(
+        'segment metadata regions do not tile the file',
+        offset: offset,
+      );
     }
     if (verify) {
       final actual = VxsCrc32c.compute(buffer, tableOffset, footerStart);
@@ -270,7 +322,10 @@ final class SegmentReader {
     }
     final indexCount = VxsLe.u32(buffer, indexOffset);
     if (4 + (indexCount + 1) * 4 > indexLength) {
-      throw VxsFormatException('segment index is truncated', offset: indexOffset);
+      throw VxsFormatException(
+        'segment index is truncated',
+        offset: indexOffset,
+      );
     }
     final entryOffsetsStart = indexOffset + 4;
     final entriesStart = entryOffsetsStart + (indexCount + 1) * 4;
@@ -290,6 +345,7 @@ final class SegmentReader {
       entryOffsetsStart,
       entriesStart,
       bloom,
+      verifyBlocksOnRead ? Uint8List((blockCount + 7) >> 3) : null,
     );
   }
 
@@ -328,6 +384,52 @@ final class SegmentReader {
   final int _entriesStart;
   final BloomFilter _bloom;
 
+  /// One bit per block: set once that block's CRC has been verified in this
+  /// process. `null` disables on-read verification.
+  final Uint8List? _verifiedBlocks;
+
+  /// Whether the block containing [docOffset] has passed its CRC check.
+  ///
+  /// The first access to a block computes its CRC; every later access is one
+  /// bitmap lookup. Compaction goes through the same path, so a corrupt block
+  /// is reported instead of being rewritten with a fresh checksum.
+  void verifyBlockFor(int docOffset) {
+    final verified = _verifiedBlocks;
+    if (verified == null) return;
+    final index = _blockIndexFor(docOffset);
+    if (index < 0) {
+      throw VxsFormatException(
+        'document offset $docOffset is outside every block',
+        offset: docOffset,
+      );
+    }
+    if (verified[index >> 3] & (1 << (index & 7)) != 0) return;
+    final blockStart = start + VxsLe.u32(buffer, tableOffset + index * 4);
+    final blockEnd = index + 1 < blockCount
+        ? start + VxsLe.u32(buffer, tableOffset + (index + 1) * 4)
+        : tableOffset;
+    // Throws VxsFormatException when the block CRC does not match.
+    BlockReader(buffer, offset: blockStart, length: blockEnd - blockStart);
+    verified[index >> 3] |= 1 << (index & 7);
+  }
+
+  int _blockIndexFor(int docOffset) {
+    var low = 0;
+    var high = blockCount - 1;
+    var found = -1;
+    while (low <= high) {
+      final middle = (low + high) >> 1;
+      final blockStart = start + VxsLe.u32(buffer, tableOffset + middle * 4);
+      if (blockStart <= docOffset) {
+        found = middle;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+    return found;
+  }
+
   /// Segment size in bytes.
   int get byteLength => end - start;
 
@@ -356,6 +458,7 @@ final class SegmentReader {
         if (docOffset == segmentTombstone) {
           return (tombstone: true, document: null);
         }
+        verifyBlockFor(docOffset);
         return (
           tombstone: false,
           document: DocView.parse(buffer, docOffset, end - docOffset),
@@ -407,7 +510,10 @@ final class SegmentReader {
     }
   }
 
-  void _visitEntry(int index, void Function(Uint8List key, DocView? document) visit) {
+  void _visitEntry(
+    int index,
+    void Function(Uint8List key, DocView? document) visit,
+  ) {
     final entryStart = _entryStart(index);
     final keyLength = VxsLe.u16(buffer, entryStart);
     final key = Uint8List.sublistView(
@@ -416,6 +522,7 @@ final class SegmentReader {
       entryStart + 2 + keyLength,
     );
     final docOffset = VxsLe.u32(buffer, entryStart + 2 + keyLength);
+    if (docOffset != segmentTombstone) verifyBlockFor(docOffset);
     visit(
       key,
       docOffset == segmentTombstone
@@ -554,13 +661,10 @@ final class SegmentEntryCursor {
       }
       final docOffset = VxsLe.u32(_reader.buffer, entryStart + 2 + keyLength);
       _key = key;
+      if (docOffset != segmentTombstone) _reader.verifyBlockFor(docOffset);
       _document = docOffset == segmentTombstone
           ? null
-          : DocView.parse(
-              _reader.buffer,
-              docOffset,
-              _reader.end - docOffset,
-            );
+          : DocView.parse(_reader.buffer, docOffset, _reader.end - docOffset);
       _index++;
       return true;
     }

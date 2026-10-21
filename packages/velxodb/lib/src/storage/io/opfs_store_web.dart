@@ -1,6 +1,5 @@
 // blit intentionally exposes the Web backend from src for opt-in use.
 // ignore_for_file: implementation_imports
-
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -78,7 +77,9 @@ final class OpfsObjectStore implements ObjectStore {
   @override
   Future<void> put(String key, Uint8List bytes) async {
     _checkOpen();
-    await _appendIndex(1, key);
+    // Object first, then the index record. A crash in between leaves an
+    // unlisted object (wasted bytes, invisible) rather than a listed key with
+    // no object, which would make a committed write unreadable.
     final file = await openOpfsBytesFile(_objectPath(key));
     try {
       await file.writeAt(0, bytes);
@@ -87,6 +88,7 @@ final class OpfsObjectStore implements ObjectStore {
     } finally {
       await file.close();
     }
+    await _appendIndex(1, key);
   }
 
   @override
@@ -150,19 +152,26 @@ final class OpfsObjectStore implements ObjectStore {
 
   static int _replay(Uint8List bytes, Set<String> keys) {
     var pos = 0;
+    var validEnd = 0;
     while (pos + 1 + 2 + 4 <= bytes.length) {
       final start = pos;
       final op = bytes[pos++];
       final keyLength = VxsLe.u16(bytes, pos);
       pos += 2;
       if (pos + keyLength + 4 > bytes.length) break;
-      final key = utf8.decode(
-        Uint8List.sublistView(bytes, pos, pos + keyLength),
-      );
+      final keyBytes = Uint8List.sublistView(bytes, pos, pos + keyLength);
       pos += keyLength;
       final crc = VxsLe.u32(bytes, pos);
       pos += 4;
       if (VxsCrc32c.compute(bytes, start, pos - 4) != crc) break;
+      final String key;
+      try {
+        key = utf8.decode(keyBytes);
+      } on FormatException {
+        // Valid checksum but invalid UTF-8: the record is damaged, treat the
+        // rest of the log as a torn tail instead of failing every open.
+        break;
+      }
       if (op == 1) {
         keys.add(key);
       } else if (op == 2) {
@@ -170,8 +179,12 @@ final class OpfsObjectStore implements ObjectStore {
       } else {
         break;
       }
+      validEnd = pos;
     }
-    return pos;
+    // Truncate at the *start* of the torn record, not after it: otherwise the
+    // leftover bytes would be read as a record on the next open and every
+    // later index append would be silently dropped.
+    return validEnd;
   }
 
   static Future<Uint8List> _readAll(BytesFile file) async {

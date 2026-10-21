@@ -1,0 +1,47 @@
+# VXS format card: encoding, decoding, projection, key comparison, CRC, and the
+# buffer primitives the codec sits on.
+[font]
+family = "sniglet"
+
+[render]
+title = "velxodb - VXS format"
+subtitle = "{platform|local} - commit {commit:short|local} - JIT micro suite, in-memory"
+footer = "blit rows measure the buffer layer, not the engine"
+width = 920
+kaomoji = ""
+
+[[series]]
+label = "velxodb"
+input = "benchmarks/results/format.json"
+format = "json"
+color = "#5B8FF9"
+
+[[row]]
+id = "serde encode.5field"
+
+[[row]]
+id = "serde encode.sink"
+
+[[row]]
+id = "serde decode.singleScan"
+
+[[row]]
+id = "serde decode.getters"
+
+[[row]]
+id = "serde project.one"
+
+[[row]]
+id = "serde project.fields"
+
+[[row]]
+id = "serde view.compare"
+
+[[row]]
+id = "serde crc.1KiB"
+
+[[row]]
+id = "format bytes.mut.write"
+
+[[row]]
+id = "format bytes.read.view"

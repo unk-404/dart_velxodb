@@ -54,11 +54,12 @@ void main() {
     });
 
     test('sparse field ids use the extended key form', () {
-      final bytes = (DocBuilder()
-            ..putInt(1, 1)
-            ..putString(1000, 'far')
-            ..putInt(60000, -3))
-          .finish();
+      final bytes =
+          (DocBuilder()
+                ..putInt(1, 1)
+                ..putString(1000, 'far')
+                ..putInt(60000, -3))
+              .finish();
       final view = DocView.parse(bytes.asUint8List());
       expect(view.getInt(1), 1);
       expect(view.getString(1000), 'far');
@@ -100,13 +101,14 @@ void main() {
 
   group('wire types', () {
     test('bools, floats and lists', () {
-      final bytes = (DocBuilder()
-            ..putBool(1, true)
-            ..putBool(2, false)
-            ..putFloat32(3, 1.5)
-            ..putStringList(4, <String>['a', '中文'])
-            ..putIntList(5, <int>[1, -2, 300]))
-          .finish();
+      final bytes =
+          (DocBuilder()
+                ..putBool(1, true)
+                ..putBool(2, false)
+                ..putFloat32(3, 1.5)
+                ..putStringList(4, <String>['a', '中文'])
+                ..putIntList(5, <int>[1, -2, 300]))
+              .finish();
       final view = DocView.parse(bytes.asUint8List());
       expect(view.getBool(1), isTrue);
       expect(view.getBool(2), isFalse);

@@ -9,8 +9,7 @@ final class OpfsObjectStore implements ObjectStore {
   }
 
   @override
-  Future<Uint8List?> get(String key) =>
-      Future<Uint8List?>.error(_unsupported);
+  Future<Uint8List?> get(String key) => Future<Uint8List?>.error(_unsupported);
 
   @override
   Future<void> put(String key, Uint8List bytes) =>

@@ -4,20 +4,21 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/velxodb.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text, int number) => (DocBuilder(schemaId: 1)
-      ..putString(1, text)
-      ..putInt(2, number))
-    .finish();
+Bytes doc(String text, int number) =>
+    (DocBuilder(schemaId: 1)
+          ..putString(1, text)
+          ..putInt(2, number))
+        .finish();
 
-List<String> keysOf(List<ScanEntry> entries) =>
-    <String>[for (final entry in entries) String.fromCharCodes(entry.key)];
+List<String> keysOf(List<ScanEntry> entries) => <String>[
+  for (final entry in entries) String.fromCharCodes(entry.key),
+];
 
 void main() {
   late Directory root;
@@ -61,9 +62,7 @@ void main() {
 
     test('uses a range index', () {
       collection.createIndex(2, VxsType.int64);
-      final query = Query(
-        where: Predicate.between(2, from: 1, to: 4),
-      );
+      final query = Query(where: Predicate.between(2, from: 1, to: 4));
       expect(collection.explainSync(query), 'index:range field=2');
       expect(keysOf(collection.findSync(query)), <String>['k1', 'k2', 'k3']);
     });
@@ -94,9 +93,7 @@ void main() {
         'scan',
       );
       expect(
-        collection.explainSync(
-          Query(where: Predicate.not(Predicate.eq(2, 1))),
-        ),
+        collection.explainSync(Query(where: Predicate.not(Predicate.eq(2, 1)))),
         'scan',
       );
     });

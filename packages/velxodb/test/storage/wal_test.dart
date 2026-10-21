@@ -76,16 +76,16 @@ void main() {
       final file = MemoryStorageFile();
       final wal = Wal(file);
       for (var i = 0; i < 5; i++) {
-        await wal.appendBatch(<WalOp>[
-          WalOp.put(key('k$i'), key('v$i')),
-        ]);
+        await wal.appendBatch(<WalOp>[WalOp.put(key('k$i'), key('v$i'))]);
       }
       expect(await file.length, greaterThan(0));
 
       final replayed = <String>[];
       final valid = await Wal(file).replay((payload) {
         WalBatch.decode(payload, (kind, k, v) {
-          replayed.add('${String.fromCharCodes(k)}=${String.fromCharCodes(v!)}');
+          replayed.add(
+            '${String.fromCharCodes(k)}=${String.fromCharCodes(v!)}',
+          );
         });
       });
       expect(replayed, <String>['k0=v0', 'k1=v1', 'k2=v2', 'k3=v3', 'k4=v4']);
@@ -106,7 +106,10 @@ void main() {
 
       final applied = <String>[];
       final valid = await Wal(file).replay((payload) {
-        WalBatch.decode(payload, (_, k, _) => applied.add(String.fromCharCodes(k)));
+        WalBatch.decode(
+          payload,
+          (_, k, _) => applied.add(String.fromCharCodes(k)),
+        );
       });
       expect(applied, <String>['a']);
       expect(valid, lessThan(cut));
@@ -116,7 +119,10 @@ void main() {
       await Wal(file).appendBatch(<WalOp>[WalOp.put(key('c'), key('3'))]);
       final again = <String>[];
       await Wal(file).replay((payload) {
-        WalBatch.decode(payload, (_, k, _) => again.add(String.fromCharCodes(k)));
+        WalBatch.decode(
+          payload,
+          (_, k, _) => again.add(String.fromCharCodes(k)),
+        );
       });
       expect(again, <String>['a', 'c']);
     });
@@ -171,7 +177,11 @@ void main() {
         });
 
         expect(await file.length, valid, reason: 'cut=$cut');
-        expect(applied.length, lessThanOrEqualTo(ops.length), reason: 'cut=$cut');
+        expect(
+          applied.length,
+          lessThanOrEqualTo(ops.length),
+          reason: 'cut=$cut',
+        );
         for (var i = 0; i < applied.length; i++) {
           expect(
             applied[i],

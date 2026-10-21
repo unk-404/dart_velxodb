@@ -116,7 +116,9 @@ final class MemoryStorageFile implements StorageFile, SyncStorageFile {
   Uint8List readAtSync(int offset, int length) {
     _checkOpen();
     if (offset < 0 || length < 0 || offset + length > _length) {
-      throw RangeError('read [$offset, ${offset + length}) outside 0..$_length');
+      throw RangeError(
+        'read [$offset, ${offset + length}) outside 0..$_length',
+      );
     }
     return Uint8List.sublistView(_data, offset, offset + length);
   }

@@ -1,7 +1,10 @@
+[font]
+family = "sniglet"
+
 [render]
 title = "velxodb database vs isar_community"
-subtitle = "tier B · 100k docs · one string index · 3 runs median · flush + reopen"
-footer = "local/CI comparison, not a project standard"
+subtitle = "{platform|local} - commit {commit:short|local} - tier B, 100k docs + one string index"
+footer = "flush + close + reopen before reads; open timed separately"
 width = 960
 kaomoji = ""
 
@@ -19,36 +22,21 @@ color = "#61DDAA"
 
 [[row]]
 id = "db.import"
-label = "Import 100k indexed documents"
-unit = "docs/s"
-group = "Document database"
 
 [[row]]
-group = "Document database"
-id = "db.get"
-label = "20k point reads (post-reopen)"
-unit = "reads/s"
+id = "db.open"
 
 [[row]]
-group = "Document database"
-id = "db.index_eq"
-label = "Indexed equality (1k hits)"
-unit = "queries/s"
-
-[[row]]
-group = "Document database"
-id = "db.index_range"
-label = "Indexed range (12k hits, closed)"
-unit = "queries/s"
-
-[[row]]
-group = "Document database"
 id = "db.reopen"
-label = "Reopen + 1k reads"
-unit = "reads/s"
 
 [[row]]
-group = "Document database"
+id = "db.get"
+
+[[row]]
+id = "db.index_eq"
+
+[[row]]
+id = "db.index_range"
+
+[[row]]
 id = "db.disk"
-label = "On-disk size"
-unit = "MB"

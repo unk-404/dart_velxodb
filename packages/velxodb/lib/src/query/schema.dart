@@ -183,12 +183,17 @@ final class TypedCollection<T> {
   }) : schema = null;
 
   /// Wraps [collection] with a [DocumentSchema].
+  ///
+  /// Schema id and version default to the ones declared by [schema], so the
+  /// document header always agrees with the schema that wrote it.
   TypedCollection.schema(
     this.collection,
     DocumentSchema<T> schema, {
-    this.schemaId = 1,
-    this.version = 1,
+    int? schemaId,
+    int? version,
   }) : schema = schema,
+       schemaId = schemaId ?? schema.schemaId,
+       version = version ?? schema.version,
        encodeValue = ((value, builder) => schema.write(value, builder)),
        decodeValue = schema.read;
 
@@ -216,8 +221,10 @@ final class TypedCollection<T> {
   void ensureIndexes() {
     final source = schema;
     if (source == null) {
-      throw StateError('this handle has no DocumentSchema; call ensureIndexes '
-          'through the generated open() instead');
+      throw StateError(
+        'this handle has no DocumentSchema; call ensureIndexes '
+        'through the generated open() instead',
+      );
     }
     for (final field in source.fields) {
       if (field.indexed) collection.createIndex(field.id, field.type);
@@ -241,10 +248,7 @@ final class TypedCollection<T> {
 
   /// Inserts or replaces [key] at the current schema version.
   void putSync(Uint8List key, T value) {
-    final builder = DocBuilder(
-      schemaId: schemaId,
-      schemaVersion: version,
-    );
+    final builder = DocBuilder(schemaId: schemaId, schemaVersion: version);
     encodeValue(value, builder);
     collection.putSync(key, builder.finish());
   }

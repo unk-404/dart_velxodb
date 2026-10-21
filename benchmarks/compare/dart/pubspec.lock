@@ -9,22 +9,6 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "0.1.6"
-  brotli_neo:
-    dependency: transitive
-    description:
-      name: brotli_neo
-      sha256: "88e69a685706b62fcb954170dfd3ebde4a7d22c8da340836b9a4f274d7808f0c"
-      url: "https://pub.flutter-io.cn"
-    source: hosted
-    version: "0.1.2"
-  dart_lz4:
-    dependency: transitive
-    description:
-      name: dart_lz4
-      sha256: cf6ee757b352f616013f6dc3db7951cdd72cb07ae6462d339882fbcd8a4f2291
-      url: "https://pub.flutter-io.cn"
-    source: hosted
-    version: "1.4.0"
   ffi:
     dependency: transitive
     description:
@@ -57,14 +41,6 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "0.7.2"
-  just_deflate:
-    dependency: transitive
-    description:
-      name: just_deflate
-      sha256: ea7074bb3df1c4c2df7a77fec997f3728eefa42b1aa7695ab2d7ab2b7bd28c5f
-      url: "https://pub.flutter-io.cn"
-    source: hosted
-    version: "0.1.0"
   lints:
     dependency: "direct dev"
     description:
@@ -73,14 +49,6 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "6.1.0"
-  lzo_neo:
-    dependency: transitive
-    description:
-      name: lzo_neo
-      sha256: "3776fdaf463105ae41ac29ffaacef63b48d626e3aaa66bca3345e59a181a5016"
-      url: "https://pub.flutter-io.cn"
-    source: hosted
-    version: "0.1.2"
   meta:
     dependency: transitive
     description:
@@ -89,36 +57,12 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "1.19.0"
-  parquet:
-    dependency: transitive
-    description:
-      name: parquet
-      sha256: f82bf3b0ec4456a039ecaa1ce2813480d4d120bc68bbf0d2517751bdf2e3cad0
-      url: "https://pub.flutter-io.cn"
-    source: hosted
-    version: "0.1.2"
-  snappy_neo:
-    dependency: transitive
-    description:
-      name: snappy_neo
-      sha256: "7116e0904787a64fa43fe8994d33299cdcb6f72913738e73322450c7135c2146"
-      url: "https://pub.flutter-io.cn"
-    source: hosted
-    version: "0.1.2"
   velxodb:
     dependency: "direct main"
     description:
       path: "../../../packages/velxodb"
       relative: true
     source: path
-    version: "0.1.0"
-  zstd_neo:
-    dependency: transitive
-    description:
-      name: zstd_neo
-      sha256: "8d19ab4f8c6ac42c1f84dd7d6b03c3ef256665ac40020a01f7ae47a8b0871c23"
-      url: "https://pub.flutter-io.cn"
-    source: hosted
-    version: "0.1.2"
+    version: "1.0.0"
 sdks:
   dart: ">=3.13.5 <4.0.0"

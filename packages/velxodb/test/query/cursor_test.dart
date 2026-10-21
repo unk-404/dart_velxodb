@@ -4,23 +4,23 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/velxodb.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text, int number) => (DocBuilder(schemaId: 1)
-      ..putString(1, text)
-      ..putInt(2, number))
-    .finish();
+Bytes doc(String text, int number) =>
+    (DocBuilder(schemaId: 1)
+          ..putString(1, text)
+          ..putInt(2, number))
+        .finish();
 
-String textOf(Bytes bytes) =>
-    DocView.parse(bytes.asUint8List()).getString(1)!;
+String textOf(Bytes bytes) => DocView.parse(bytes.asUint8List()).getString(1)!;
 
-List<String> keysOf(List<ScanEntry> entries) =>
-    <String>[for (final entry in entries) String.fromCharCodes(entry.key)];
+List<String> keysOf(List<ScanEntry> entries) => <String>[
+  for (final entry in entries) String.fromCharCodes(entry.key),
+];
 
 void main() {
   late Directory root;
@@ -54,34 +54,33 @@ void main() {
     });
 
     test('honours start and end bounds', () {
-      expect(
-        keysOf(collection.scanSync(start: k('b'), end: k('d'))),
-        <String>['b', 'c'],
-      );
+      expect(keysOf(collection.scanSync(start: k('b'), end: k('d'))), <String>[
+        'b',
+        'c',
+      ]);
       expect(
         keysOf(
-          collection.scanSync(
-            start: k('b'),
-            end: k('d'),
-            includeStart: false,
-          ),
+          collection.scanSync(start: k('b'), end: k('d'), includeStart: false),
         ),
         <String>['c'],
       );
       expect(
-        keysOf(collection.scanSync(start: k('b'), end: k('d'), includeEnd: true)),
+        keysOf(
+          collection.scanSync(start: k('b'), end: k('d'), includeEnd: true),
+        ),
         <String>['b', 'c', 'd'],
       );
-      expect(keysOf(collection.scanSync(start: k('c'))), <String>['c', 'd', 'e']);
+      expect(keysOf(collection.scanSync(start: k('c'))), <String>[
+        'c',
+        'd',
+        'e',
+      ]);
       expect(keysOf(collection.scanSync(end: k('c'))), <String>['a', 'b']);
     });
 
     test('combines prefix and range', () {
       collection.putSync(k('ca'), doc('ca', 6));
-      expect(
-        keysOf(collection.scanSync(prefix: k('c'))),
-        <String>['c', 'ca'],
-      );
+      expect(keysOf(collection.scanSync(prefix: k('c'))), <String>['c', 'ca']);
       expect(
         keysOf(collection.scanSync(prefix: k('c'), start: k('ca'))),
         <String>['ca'],
@@ -96,10 +95,7 @@ void main() {
     });
 
     test('applies a limit', () {
-      expect(
-        keysOf(collection.scanSync(limit: 2)),
-        <String>['a', 'b'],
-      );
+      expect(keysOf(collection.scanSync(limit: 2)), <String>['a', 'b']);
     });
 
     test('merges memtable and segment with tombstones', () async {

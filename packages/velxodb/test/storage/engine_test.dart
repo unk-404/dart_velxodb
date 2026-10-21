@@ -1,16 +1,16 @@
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/storage.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text) => (DocBuilder(schemaId: 1)
-      ..putString(1, text)
-      ..putInt(2, text.length))
-    .finish();
+Bytes doc(String text) =>
+    (DocBuilder(schemaId: 1)
+          ..putString(1, text)
+          ..putInt(2, text.length))
+        .finish();
 
 StorageEngine openEngine(MemoryStorageDirectory directory) {
   final engine = StorageEngine(directory: directory);
@@ -26,7 +26,10 @@ void main() {
     test('put, get, overwrite and delete', () {
       final engine = openEngine(MemoryStorageDirectory());
       engine.putSync(k('a'), doc('first'));
-      expect(DocView.parse(engine.get(k('a'))!.asUint8List()).getString(1), 'first');
+      expect(
+        DocView.parse(engine.get(k('a'))!.asUint8List()).getString(1),
+        'first',
+      );
 
       engine.putSync(k('a'), doc('second'));
       expect(
@@ -89,7 +92,10 @@ void main() {
       engine.putSync(k('k'), doc('v2'));
       engine.flushSync();
       expect(engine.segments, hasLength(2));
-      expect(DocView.parse(engine.get(k('k'))!.asUint8List()).getString(1), 'v2');
+      expect(
+        DocView.parse(engine.get(k('k'))!.asUint8List()).getString(1),
+        'v2',
+      );
 
       final reopened = openEngine(directory);
       expect(
@@ -123,7 +129,12 @@ void main() {
         source.openSync(StorageEngine.walFileName).readAllSync(),
       );
 
-      for (final cut in <int>[complete.length - 1, complete.length - 7, 5, 64]) {
+      for (final cut in <int>[
+        complete.length - 1,
+        complete.length - 7,
+        5,
+        64,
+      ]) {
         final directory = MemoryStorageDirectory();
         directory
             .openSync(StorageEngine.walFileName)
@@ -132,10 +143,7 @@ void main() {
         for (var i = 0; i < 4; i++) {
           final value = recovered.get(k('k$i'));
           if (value != null) {
-            expect(
-              DocView.parse(value.asUint8List()).getString(1),
-              'v$i',
-            );
+            expect(DocView.parse(value.asUint8List()).getString(1), 'v$i');
           }
         }
       }
@@ -254,7 +262,9 @@ void main() {
       final torn = MemoryStorageDirectory();
       torn
           .openSync(StorageEngine.walFileName)
-          .writeAllSync(Uint8List.sublistView(complete, 0, complete.length - 4));
+          .writeAllSync(
+            Uint8List.sublistView(complete, 0, complete.length - 4),
+          );
 
       final recovered = openEngine(torn);
       expect(recovered.get(k('a')), isNull);
@@ -285,7 +295,10 @@ void main() {
       expect(walFileOf(directory).flushCount, greaterThan(0));
 
       await engine.close();
-      expect(() => engine.putSync(k('b'), doc('y')), throwsA(isA<VelxoClosedException>()));
+      expect(
+        () => engine.putSync(k('b'), doc('y')),
+        throwsA(isA<VelxoClosedException>()),
+      );
       expect(() => engine.get(k('a')), throwsA(isA<VelxoClosedException>()));
     });
   });

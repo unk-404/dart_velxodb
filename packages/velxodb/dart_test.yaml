@@ -1,0 +1,3 @@
+tags:
+  crash:
+    description: Deterministic crash-point matrix; runs in its own CI job.

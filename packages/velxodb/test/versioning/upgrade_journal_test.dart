@@ -84,12 +84,31 @@ void main() {
     expect(readFile(directory, 'data.bin'), bytes('abcdef'));
   });
 
-  test('a bad header is typed corruption', () {
+  test('a journal shorter than its header recorded nothing', () {
     final directory = MemoryStorageDirectory();
     writeFile(directory, upgradeJournalFileName, bytes('nope'));
+    // A crash during begin() leaves a torn header and no records: discarding it
+    // is the only correct recovery.
+    UpgradeJournal(directory).rollback();
+    expect(directory.existsSync(upgradeJournalFileName), isFalse);
+  });
+
+  test('a bad full header is typed corruption', () {
+    final directory = MemoryStorageDirectory();
+    writeFile(directory, upgradeJournalFileName, bytes('nope nope nope'));
     expect(
       () => UpgradeJournal(directory).rollback(),
       throwsA(isA<VelxoCorruptException>()),
     );
+  });
+
+  test('rollback restores the original length of a grown file', () {
+    final directory = MemoryStorageDirectory();
+    writeFile(directory, 'data.bin', bytes('abc'));
+    final journal = UpgradeJournal(directory)..begin();
+    journal.recordWrite('data.bin', 0, bytes('abc'));
+    writeFile(directory, 'data.bin', bytes('abcdef'));
+    journal.rollback();
+    expect(readFile(directory, 'data.bin'), bytes('abc'));
   });
 }

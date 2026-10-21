@@ -4,14 +4,14 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/velxodb.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes props(String text) => (DocBuilder(schemaId: 9)..putString(1, text)).finish();
+Bytes props(String text) =>
+    (DocBuilder(schemaId: 9)..putString(1, text)).finish();
 
 void main() {
   late Directory root;
@@ -93,10 +93,7 @@ void main() {
       graph.link('follows', u1, u2);
       graph.link('follows', u1, u3);
       expect(graph.outgoing('follows', u1), hasLength(2));
-      expect(
-        graph.neighbours('follows', u1).toSet(),
-        <NodeRef>{u2, u3},
-      );
+      expect(graph.neighbours('follows', u1).toSet(), <NodeRef>{u2, u3});
       expect(graph.neighbours('follows', u2), isEmpty);
     });
 

@@ -1,6 +1,14 @@
 import 'dart:typed_data';
 
+import '../errors.dart';
 import '../storage/directory.dart';
+import '../upgrade_journal.dart';
+
+/// Copy chunk size: a segment is streamed, never held in memory whole.
+const int _copyChunkBytes = 1 << 20;
+
+/// Names that must never be copied into a backup.
+const Set<String> _skippedNames = <String>{'LOCK', 'FORMAT.tmp'};
 
 /// Summary of a backup or restore.
 final class BackupReport {
@@ -19,32 +27,46 @@ final class BackupReport {
 
 /// Copies every database file from [source] into the empty [target].
 ///
-/// The `LOCK` file is not copied. [target] must contain no files yet (an empty
-/// directory created by its backend is fine). Both directories stay owned by
-/// the caller; close them after copying.
+/// The `LOCK`, `FORMAT.tmp` and upgrade-journal files are not copied: the first
+/// is backend state, the second is a half-written stamp, and copying a journal
+/// would make the backup refuse to open. [target] must contain no files yet (an
+/// empty directory created by its backend is fine). Files are streamed in
+/// chunks, so a large segment is not held in memory.
 BackupReport copyDatabase(
   SyncStorageDirectory source,
   SyncStorageDirectory target,
 ) {
+  if (source.existsSync(upgradeJournalFileName)) {
+    throw const VelxoUpgradeRequiredException(
+      'source has an unfinished upgrade journal; roll it back before backing up',
+    );
+  }
   if (target.listSync().any((name) => name != 'LOCK')) {
     throw StateError('backup target is not empty');
   }
   var files = 0;
   var bytes = 0;
   for (final name in source.listSync()) {
-    if (name == 'LOCK') continue;
+    if (_skippedNames.contains(name)) continue;
     final input = source.openSync(name, create: false);
     try {
-      final data = Uint8List.fromList(input.readAllSync());
+      final length = input.lengthSync;
       final output = target.openSync(name);
       try {
-        output.writeAllSync(data);
+        var offset = 0;
+        while (offset < length) {
+          final take = length - offset < _copyChunkBytes
+              ? length - offset
+              : _copyChunkBytes;
+          output.appendSync(Uint8List.fromList(input.readAtSync(offset, take)));
+          offset += take;
+        }
         output.flushSync();
       } finally {
         output.closeSync();
       }
       files++;
-      bytes += data.length;
+      bytes += length;
     } finally {
       input.closeSync();
     }

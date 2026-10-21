@@ -5,7 +5,8 @@ import '../errors.dart';
 import '../serde/schema.dart';
 import '../serde/view.dart';
 import '../storage/background_segment.dart';
-import '../storage/check.dart';import '../storage/directory.dart';
+import '../storage/check.dart';
+import '../storage/directory.dart';
 import '../storage/engine.dart';
 import '../storage/io/storage_io.dart';
 import '../storage/maintenance.dart';
@@ -60,6 +61,7 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
     bool deferredMaintenance = false,
     bool backgroundFlush = false,
     bool readOnly = false,
+    bool repairIndexes = true,
   }) {
     final directory = LocalStorageDirectory(path, readOnly: readOnly);
     StorageEngine? engine;
@@ -82,7 +84,14 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
         readOnly: readOnly,
       );
       engine.openSync();
-      return VelxoDatabase._(directory, engine, catalog, readOnly: readOnly);
+      final database = VelxoDatabase._(
+        directory,
+        engine,
+        catalog,
+        readOnly: readOnly,
+      );
+      if (!readOnly && repairIndexes) database._finishPendingIndexes();
+      return database;
     } on Object {
       // A failed open must not leak the directory lock.
       if (engine != null) {
@@ -158,17 +167,22 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
   StorageEngine get engine => _engine;
 
   /// Typed edges (graph) on top of the same engine.
-  GraphStore get graph => _graph ??= GraphStore(_engine, this);
+  GraphStore get graph {
+    _checkOpen();
+    return _graph ??= GraphStore(_engine, this);
+  }
 
   /// Root directory.
   SyncStorageDirectory get directory => _directory;
 
   /// Names of every collection that has been created.
-  List<String> get collectionNames =>
-      <String>[for (final entry in _catalog.entries) entry.name];
+  List<String> get collectionNames => <String>[
+    for (final entry in _catalog.entries) entry.name,
+  ];
 
   /// Returns (creating if needed) the collection called [name].
   Collection collection(String name) {
+    _checkOpen();
     final cached = _collections[name];
     if (cached != null) return cached;
     var id = _catalog.idOf(name);
@@ -180,9 +194,34 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
       _catalogStore.saveSync(_catalog);
       id = _catalog.idOf(name)!;
     }
+    return _cachedCollection(id, name);
+  }
+
+  /// Returns the collection called [name] when it exists, without creating it.
+  Collection? collectionOrNull(String name) {
+    _checkOpen();
+    final cached = _collections[name];
+    if (cached != null) return cached;
+    final id = _catalog.idOf(name);
+    if (id == null) return null;
+    return _cachedCollection(id, name);
+  }
+
+  Collection _cachedCollection(int id, String name) {
     final created = Collection(_engine, id, name, catalog: this);
     _collections[name] = created;
     return created;
+  }
+
+  void _checkOpen() {
+    if (_closed) throw const VelxoClosedException('database is closed');
+  }
+
+  void _checkWritableCatalog() {
+    _checkOpen();
+    if (_readOnly) {
+      throw const VelxoReadOnlyException('database is read-only');
+    }
   }
 
   @override
@@ -196,10 +235,21 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
   ];
 
   @override
-  IndexDefinition registerIndex(int collectionId, int fieldId, VxsType type) {
+  IndexDefinition registerIndex(
+    int collectionId,
+    int fieldId,
+    VxsType type, {
+    bool ready = true,
+  }) {
+    _checkWritableCatalog();
     final existing = _catalog.indexFor(collectionId, fieldId);
-    if (existing != null) return existing;
-    _catalog = _catalog.withIndex(collectionId, fieldId, type);
+    if (existing != null) {
+      if (existing.ready == ready) return existing;
+      _catalog = _catalog.withIndexReady(collectionId, fieldId, ready);
+      _catalogStore.saveSync(_catalog);
+      return _catalog.indexFor(collectionId, fieldId)!;
+    }
+    _catalog = _catalog.withIndex(collectionId, fieldId, type, ready: ready);
     _catalogStore.saveSync(_catalog);
     return _catalog.indexFor(collectionId, fieldId)!;
   }
@@ -222,11 +272,23 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
   TextIndexDefinition registerTextIndex(
     int collectionId,
     int fieldId,
-    Tokenizer tokenizer,
-  ) {
+    Tokenizer tokenizer, {
+    bool ready = true,
+  }) {
+    _checkWritableCatalog();
     final existing = _catalog.textIndexFor(collectionId, fieldId);
-    if (existing != null) return existing;
-    _catalog = _catalog.withTextIndex(collectionId, fieldId, tokenizer);
+    if (existing != null) {
+      if (existing.ready == ready) return existing;
+      _catalog = _catalog.withTextIndexReady(collectionId, fieldId, ready);
+      _catalogStore.saveSync(_catalog);
+      return _catalog.textIndexFor(collectionId, fieldId)!;
+    }
+    _catalog = _catalog.withTextIndex(
+      collectionId,
+      fieldId,
+      tokenizer,
+      ready: ready,
+    );
     _catalogStore.saveSync(_catalog);
     return _catalog.textIndexFor(collectionId, fieldId)!;
   }
@@ -256,6 +318,7 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
     int targetCollectionId,
     OnDelete onDelete,
   ) {
+    _checkWritableCatalog();
     final existing = _catalog.referenceFor(sourceCollectionId, fieldId);
     if (existing != null) return existing;
     _catalog = _catalog.withReference(
@@ -270,11 +333,32 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
 
   @override
   int relationId(String name) {
+    _checkWritableCatalog();
     final existing = _catalog.relationIdOf(name);
     if (existing != null) return existing;
     _catalog = _catalog.withRelation(name);
     _catalogStore.saveSync(_catalog);
     return _catalog.relationIdOf(name)!;
+  }
+
+  /// Finishes index backfills that a crash interrupted.
+  ///
+  /// An index is recorded as not ready before its backfill starts and marked
+  /// ready afterwards. Opening writable therefore always leaves every declared
+  /// index complete; a read-only open leaves it not ready and queries simply
+  /// fall back to a scan.
+  void _finishPendingIndexes() {
+    for (final entry in List<CollectionEntry>.of(_catalog.entries)) {
+      final pending =
+          _catalog.indexes.any(
+            (index) => index.collectionId == entry.id && !index.ready,
+          ) ||
+          _catalog.textIndexes.any(
+            (index) => index.collectionId == entry.id && !index.ready,
+          );
+      if (!pending) continue;
+      collection(entry.name).repairPendingIndexes();
+    }
   }
 
   @override
@@ -311,11 +395,13 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
   Future<void> waitForMaintenance() => _engine.waitForMaintenance();
 
   @override
-  List<String> relationNames() =>
-      <String>[for (final relation in _catalog.relations) relation.name];
+  List<String> relationNames() => <String>[
+    for (final relation in _catalog.relations) relation.name,
+  ];
 
   /// Flushes the memtable into a segment.
   bool flushSync() => _engine.flushSync() != null;
+
   /// Async facade over [flushSync].
   Future<bool> flush() async => flushSync();
 
@@ -326,11 +412,23 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
   /// file); close it after the call. Read-only handles can be backed up without
   /// flushing.
   BackupReport backupSync(SyncStorageDirectory target) {
-    if (_closed) {
-      throw const VelxoClosedException('database is closed');
+    _checkOpen();
+    if (!_readOnly) {
+      if (_engine.maintenanceScheduled) {
+        throw const VelxoConflictException(
+          'background maintenance is running; await db.waitForMaintenance() '
+          'before taking a synchronous backup',
+        );
+      }
+      flushSync();
     }
-    if (!_readOnly) flushSync();
     return copyDatabase(_directory, target);
+  }
+
+  /// Waits for background maintenance, then takes a consistent backup.
+  Future<BackupReport> backup(SyncStorageDirectory target) async {
+    await waitForMaintenance();
+    return backupSync(target);
   }
 
   /// Merges segments and drops tombstones.
@@ -439,9 +537,7 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
         dangling++;
         continue;
       }
-      final value = definition.readValue(
-        DocView.parse(document.asUint8List()),
-      );
+      final value = definition.readValue(DocView.parse(document.asUint8List()));
       if (value != _decodeIndexValue(definition, raw)) stale++;
     }
     return (checked: checked, dangling: dangling, stale: stale);
@@ -482,10 +578,7 @@ final class VelxoDatabase implements CollectionCatalog, RelationCatalog {
     return (checked: checked, dangling: dangling, stale: stale);
   }
 
-  static Object? _decodeIndexValue(
-    IndexDefinition definition,
-    Uint8List raw,
-  ) {
+  static Object? _decodeIndexValue(IndexDefinition definition, Uint8List raw) {
     switch (definition.type) {
       case VxsType.string:
         return decodeOrderedString(raw, 0).value;

@@ -4,20 +4,21 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/velxodb.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text, int number) => (DocBuilder(schemaId: 1)
-      ..putString(1, text)
-      ..putInt(2, number))
-    .finish();
+Bytes doc(String text, int number) =>
+    (DocBuilder(schemaId: 1)
+          ..putString(1, text)
+          ..putInt(2, number))
+        .finish();
 
-List<String> keysOf(List<ScanEntry> entries) =>
-    <String>[for (final entry in entries) String.fromCharCodes(entry.key)];
+List<String> keysOf(List<ScanEntry> entries) => <String>[
+  for (final entry in entries) String.fromCharCodes(entry.key),
+];
 
 List<int> valuesOf(List<ScanEntry> entries) => <int>[
   for (final entry in entries)
@@ -53,7 +54,12 @@ void main() {
       );
       expect(
         valuesOf(
-          collection.lookupByIndexRangeSync(2, from: -2, to: 2, includeTo: true),
+          collection.lookupByIndexRangeSync(
+            2,
+            from: -2,
+            to: 2,
+            includeTo: true,
+          ),
         ),
         <int>[-2, -1, 0, 1, 2],
       );
@@ -63,10 +69,13 @@ void main() {
         ),
         <int>[-1, 0, 1, 2, 3, 4, 5],
       );
-      expect(
-        valuesOf(collection.lookupByIndexRangeSync(2, to: 0)),
-        <int>[-5, -4, -3, -2, -1],
-      );
+      expect(valuesOf(collection.lookupByIndexRangeSync(2, to: 0)), <int>[
+        -5,
+        -4,
+        -3,
+        -2,
+        -1,
+      ]);
     });
 
     test('ranges over strings, including prefixes and empty strings', () {
@@ -78,21 +87,25 @@ void main() {
       collection.putSync(k('c'), doc('c', 5));
 
       expect(
-        valuesOf(
-          collection.lookupByIndexRangeSync(1, from: 'a', to: 'c'),
-        ),
+        valuesOf(collection.lookupByIndexRangeSync(1, from: 'a', to: 'c')),
         <int>[1, 2, 3, 4],
       );
       expect(
         valuesOf(
-          collection.lookupByIndexRangeSync(1, from: 'ab', to: 'b', includeTo: true),
+          collection.lookupByIndexRangeSync(
+            1,
+            from: 'ab',
+            to: 'b',
+            includeTo: true,
+          ),
         ),
         <int>[2, 3],
       );
-      expect(
-        valuesOf(collection.lookupByIndexRangeSync(1, from: 'b')),
-        <int>[3, 4, 5],
-      );
+      expect(valuesOf(collection.lookupByIndexRangeSync(1, from: 'b')), <int>[
+        3,
+        4,
+        5,
+      ]);
     });
 
     test('limit stops early', () {

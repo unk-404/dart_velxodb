@@ -4,7 +4,6 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/storage.dart';
@@ -50,14 +49,8 @@ void main() {
         () => reader.deleteSync(k('a')),
         throwsA(isA<VelxoReadOnlyException>()),
       );
-      expect(
-        readonly.flushSync,
-        throwsA(isA<VelxoReadOnlyException>()),
-      );
-      expect(
-        readonly.compactSync,
-        throwsA(isA<VelxoReadOnlyException>()),
-      );
+      expect(readonly.flushSync, throwsA(isA<VelxoReadOnlyException>()));
+      expect(readonly.compactSync, throwsA(isA<VelxoReadOnlyException>()));
       expect(
         () => reader.createIndex(2, VxsType.string),
         throwsA(isA<VelxoReadOnlyException>()),
@@ -178,10 +171,7 @@ void main() {
       );
       target.openSync('stray').closeSync();
       try {
-        expect(
-          () => db.backupSync(target),
-          throwsA(isA<StateError>()),
-        );
+        expect(() => db.backupSync(target), throwsA(isA<StateError>()));
       } finally {
         target.closeSync();
       }

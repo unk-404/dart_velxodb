@@ -69,10 +69,11 @@ void main() {
       }
       final query = Query(where: Predicate.eq(3, 'u1'));
       expect(messages.collection.explainSync(query), 'index:eq field=3');
-      expect(
-        messages.findSync(query).map((m) => m.id).toSet(),
-        <String>{'m0', 'm2', 'm4'},
-      );
+      expect(messages.findSync(query).map((m) => m.id).toSet(), <String>{
+        'm0',
+        'm2',
+        'm4',
+      });
     });
 
     test('finds by an indexed range', () {
@@ -112,13 +113,14 @@ void main() {
     test('reads documents written by an older version with defaults', () {
       expect(ChatMessage.documentSchemaVersion, 2);
       // A version 1 document has fields 1..5 but no priority (7).
-      final old = (DocBuilder(schemaId: 1, schemaVersion: 1)
-            ..putString(1, 'm1')
-            ..putString(2, 'c1')
-            ..putString(3, 'u1')
-            ..putInt(4, 100)
-            ..putString(5, 'from v1'))
-          .finish();
+      final old =
+          (DocBuilder(schemaId: 1, schemaVersion: 1)
+                ..putString(1, 'm1')
+                ..putString(2, 'c1')
+                ..putString(3, 'u1')
+                ..putInt(4, 100)
+                ..putString(5, 'from v1'))
+              .finish();
       final key = ChatMessage.keyOf(message(id: 'm1'));
       messages.collection.putSync(key, old);
 
@@ -128,13 +130,14 @@ void main() {
     });
 
     test('migrates old documents and then reads the new field', () {
-      final old = (DocBuilder(schemaId: 1, schemaVersion: 1)
-            ..putString(1, 'm1')
-            ..putString(2, 'c1')
-            ..putString(3, 'u1')
-            ..putInt(4, 100)
-            ..putString(5, 'old'))
-          .finish();
+      final old =
+          (DocBuilder(schemaId: 1, schemaVersion: 1)
+                ..putString(1, 'm1')
+                ..putString(2, 'c1')
+                ..putString(3, 'u1')
+                ..putInt(4, 100)
+                ..putString(5, 'old'))
+              .finish();
       final key = ChatMessage.keyOf(message(id: 'm1'));
       messages.collection.putSync(key, old);
 

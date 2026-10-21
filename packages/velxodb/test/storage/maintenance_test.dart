@@ -4,7 +4,6 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/storage.dart';
@@ -12,7 +11,8 @@ import 'package:velxodb/velxodb.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text) => (DocBuilder(schemaId: 1)..putString(1, text)).finish();
+Bytes doc(String text) =>
+    (DocBuilder(schemaId: 1)..putString(1, text)).finish();
 
 class ManualScheduler implements MaintenanceScheduler {
   final List<void Function()> queue = <void Function()>[];
@@ -45,39 +45,48 @@ void main() {
       engine.closeSync();
     });
 
-    test('a deferred flush leaves the write path before building a segment', () {
-      final scheduler = ManualScheduler();
-      final directory = MemoryStorageDirectory();
-      final engine = StorageEngine(
-        directory: directory,
-        autoFlush: true,
-        maxMemtableBytes: 16,
-        maintenanceScheduler: scheduler,
-      )..openSync();
+    test(
+      'a deferred flush leaves the write path before building a segment',
+      () {
+        final scheduler = ManualScheduler();
+        final directory = MemoryStorageDirectory();
+        final engine = StorageEngine(
+          directory: directory,
+          autoFlush: true,
+          maxMemtableBytes: 16,
+          maintenanceScheduler: scheduler,
+        )..openSync();
 
-      engine.putSync(k('a'), doc('one'));
-      engine.putSync(k('b'), doc('two'));
-      engine.putSync(k('c'), doc('three'));
+        engine.putSync(k('a'), doc('one'));
+        engine.putSync(k('b'), doc('two'));
+        engine.putSync(k('c'), doc('three'));
 
-      expect(engine.maintenanceScheduled, isTrue);
-      expect(engine.segments, isEmpty);
-      // Reads are served by the memtable while maintenance is pending.
-      expect(DocView.parse(engine.get(k('a'))!.asUint8List()).getString(1), 'one');
+        expect(engine.maintenanceScheduled, isTrue);
+        expect(engine.segments, isEmpty);
+        // Reads are served by the memtable while maintenance is pending.
+        expect(
+          DocView.parse(engine.get(k('a'))!.asUint8List()).getString(1),
+          'one',
+        );
 
-      scheduler.run();
-      expect(engine.maintenanceScheduled, isFalse);
-      expect(engine.segments, isNotEmpty);
-      expect(DocView.parse(engine.get(k('a'))!.asUint8List()).getString(1), 'one');
+        scheduler.run();
+        expect(engine.maintenanceScheduled, isFalse);
+        expect(engine.segments, isNotEmpty);
+        expect(
+          DocView.parse(engine.get(k('a'))!.asUint8List()).getString(1),
+          'one',
+        );
 
-      engine.closeSync();
+        engine.closeSync();
 
-      final reopened = StorageEngine(directory: directory)..openSync();
-      expect(
-        DocView.parse(reopened.get(k('b'))!.asUint8List()).getString(1),
-        'two',
-      );
-      reopened.closeSync();
-    });
+        final reopened = StorageEngine(directory: directory)..openSync();
+        expect(
+          DocView.parse(reopened.get(k('b'))!.asUint8List()).getString(1),
+          'two',
+        );
+        reopened.closeSync();
+      },
+    );
 
     test('closing with a pending flush is safe and WAL recovers the data', () {
       final scheduler = ManualScheduler();

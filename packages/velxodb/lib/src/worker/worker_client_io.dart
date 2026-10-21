@@ -299,8 +299,8 @@ Future<Object?> _dispatch(
   switch (op) {
     case 'get':
       final bytes = database
-          .collection(args[0] as String)
-          .get(args[1] as Uint8List);
+          .collectionOrNull(args[0] as String)
+          ?.get(args[1] as Uint8List);
       return bytes == null ? null : Uint8List.fromList(bytes.asUint8List());
     case 'put':
       final transfer = args[2] as TransferableTypedData;
@@ -310,14 +310,20 @@ Future<Object?> _dispatch(
           .putSync(args[1] as Uint8List, Bytes.view(bytes, 0, bytes.length));
       return null;
     case 'delete':
-      database.collection(args[0] as String).deleteSync(args[1] as Uint8List);
+      database
+          .collectionOrNull(args[0] as String)
+          ?.deleteSync(args[1] as Uint8List);
       return null;
     case 'page':
-      final page = database.collection(args[0] as String).pageSync(
-            prefix: args[1] as Uint8List?,
-            after: args[2] as Uint8List?,
-            limit: args[3] as int,
-          );
+      final collection = database.collectionOrNull(args[0] as String);
+      if (collection == null) {
+        return <Object?>[<Object?>[], null];
+      }
+      final page = collection.pageSync(
+        prefix: args[1] as Uint8List?,
+        after: args[2] as Uint8List?,
+        limit: args[3] as int,
+      );
       return <Object?>[
         <Object?>[
           for (final entry in page.entries)

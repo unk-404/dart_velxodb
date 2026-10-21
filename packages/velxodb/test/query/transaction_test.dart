@@ -4,7 +4,6 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/storage.dart';
@@ -12,16 +11,17 @@ import 'package:velxodb/velxodb.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text, [int number = 0]) => (DocBuilder(schemaId: 1)
-      ..putString(1, text)
-      ..putInt(2, number))
-    .finish();
+Bytes doc(String text, [int number = 0]) =>
+    (DocBuilder(schemaId: 1)
+          ..putString(1, text)
+          ..putInt(2, number))
+        .finish();
 
-String textOf(Bytes bytes) =>
-    DocView.parse(bytes.asUint8List()).getString(1)!;
+String textOf(Bytes bytes) => DocView.parse(bytes.asUint8List()).getString(1)!;
 
-List<String> keysOf(List<ScanEntry> entries) =>
-    <String>[for (final entry in entries) String.fromCharCodes(entry.key)];
+List<String> keysOf(List<ScanEntry> entries) => <String>[
+  for (final entry in entries) String.fromCharCodes(entry.key),
+];
 
 void main() {
   group('engine transactions', () {
@@ -98,13 +98,16 @@ void main() {
       engine.syncNow();
 
       final complete = Uint8List.fromList(
-        (directory.openSync(StorageEngine.walFileName) as MemoryStorageFile)
-            .bytes,
+        (directory.openSync(
+          StorageEngine.walFileName,
+        ) as MemoryStorageFile).bytes,
       );
       final torn = MemoryStorageDirectory();
       torn
           .openSync(StorageEngine.walFileName)
-          .writeAllSync(Uint8List.sublistView(complete, 0, complete.length - 4));
+          .writeAllSync(
+            Uint8List.sublistView(complete, 0, complete.length - 4),
+          );
 
       final recovered = StorageEngine(directory: torn)..openSync();
       expect(recovered.get(k('a')), isNull);

@@ -1,7 +1,8 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/bytes_ffi.dart' show MappedRegion, MmapFile, openMmapFileSync;
+import 'package:blit/bytes_ffi.dart'
+    show MappedRegion, MmapFile, openMmapFileSync;
 
 import '../../errors.dart';
 import '../directory.dart';
@@ -11,7 +12,8 @@ import '../file.dart';
 ///
 /// This file is only compiled on the VM (see `storage_io.dart`); the web build
 /// gets a stub until the OPFS backend lands.
-final class LocalStorageDirectory implements SyncStorageDirectory {  /// Opens (and creates) the directory at [path] and takes a lock.
+final class LocalStorageDirectory implements SyncStorageDirectory {
+  /// Opens (and creates) the directory at [path] and takes a lock.
   ///
   /// Writable opens take an exclusive lock; read-only opens take a shared one,
   /// so many readers can coexist while a writer stays exclusive. A second

@@ -1,82 +1,94 @@
 # Versioning policy
 
-VelxoDB uses `A.B.C` (semantic versioning). The same numbers govern both the
-package API and the on-disk format. This document is normative: a release that
-does not satisfy its section must not be published.
+VelxoDB versions are `A.B.C`. The same three numbers govern the package API, the
+on-disk format and the documented behavior. This document is normative: a
+release that cannot satisfy its section must not be published.
+
+The policy exists because an embedded database has two independent consumers:
+the application that links the package, and any tool that reads the files
+directly. `A.B.C` answers both questions at once.
 
 ## Terms
 
-- **Direct read**: interpreting on-disk bytes with a reader built for one exact
-  `A.B.C` release, without VelxoDB's compatibility layer or any implicit
-  conversion. A direct reader is not promised to work on another `A.B.*` or
-  another A at all.
-- **API interop**: opening a database through VelxoDB's own API, where the
-  release's compatibility layer may translate or ignore on-disk differences and
-  the logical data is identical.
+- **Direct read** — interpreting on-disk bytes with a reader built for one exact
+  `A.B.C` release, without VelxoDB's compatibility layer. Only the format
+  version documented for those bytes is promised to work.
+- **API interop** — opening a database through VelxoDB's own API, where the
+  release's compatibility layer may translate or ignore on-disk differences. The
+  logical data is identical; the bytes may not be.
+- **Format stamp** — the `FORMAT` file at the database root (an object named
+  `<prefix>FORMAT` on the object-store backend), described below.
 
 ## Rules by position
 
-### C — patch (e.g. 1.4.2 → 1.4.3)
+| Change | `C` patch | `B` minor | `A` major |
+| --- | --- | --- | --- |
+| On-disk bytes | byte-identical | may change | may change |
+| Direct read by another release | guaranteed | not guaranteed | not guaranteed |
+| VelxoDB API interop within the same `A` | guaranteed | guaranteed, automatic | requires explicit upgrade |
+| Package API | unchanged | additions / deprecations only | may break |
+| Migration logic | none | implicit, transparent | explicit, journaled |
+| User action to open | none | none | `upgradeSync` |
 
-- On-disk format is **byte-identical**. No new fields, files, encodings or
-  default changes.
-- The export API is **unchanged**: no additions, removals or deprecations. The
-  documented behavior of every exported symbol is unchanged.
-- Internal logic changes, bug fixes and performance optimizations are allowed,
-  as long as no exported API behavior changes.
-- No migration code, explicit or implicit, may be added for a C release.
-- A database written by any `A.B.C` opens in any other `A.B.C` with no action.
+### `C` — patch (for example 1.4.2 → 1.4.3)
 
-### B — minor (e.g. 1.4.3 → 1.5.0)
+- The on-disk format is **byte-identical**. No new fields, files, encodings,
+  default values or changed interpretation.
+- The exported API is **unchanged**: no additions, removals, deprecations or
+  behavior changes. Bug fixes may change behavior only where the previous
+  behavior was undocumented or clearly a defect.
+- Internal logic and performance work are allowed.
+- No migration code, explicit or implicit, may be added.
+- Any `1.x.y` database opens in any other `1.x.y` release with no action.
 
-- The on-disk format may change. A **direct reader for one exact `A.B.C`** is
-  not guaranteed to work on a different `A.B.*` version; new bytes may need the
-  matching reader.
-- API interop is still absolute **inside the same A**: every `A.x.y` opens every
-  `A.*` database through VelxoDB with no user action.
-  - Newer VelxoDB implicitly upgrades old data when it opens it (in memory, and
-    on the next write for the durable form).
-  - Older VelxoDB in the same A must ignore unknown fields/sections. A B
-    change that cannot be ignored by older releases is an A change.
-- API changes are additive only: new APIs, or an explicit `@Deprecated`
-  annotation that keeps the old behavior. No removals, no silent behavior
-  changes within the same A.
-- Tests must include the compatibility matrix: the newest release opens every
+### `B` — minor (for example 1.4.3 → 1.5.0)
+
+- The on-disk format may change. A **direct reader built for one exact `A.B.C`**
+  is not promised to read a different `A.B.*`.
+- **API interop inside the same `A` is absolute in both directions.**
+  - A newer release implicitly upgrades older data when it opens it: in memory,
+    and in its durable form on the next write.
+  - An older release in the same `A` must still open data written by a newer
+    release. It ignores unknown fields and sections and preserves them verbatim
+    when it rewrites a document. A `B` change that an older release cannot
+    ignore is an `A` change, not a `B` change.
+- API changes are additive: new APIs, or `@Deprecated` annotations that keep the
+  old behavior. No removals and no silent behavior changes inside one `A`.
+- Tests must cover the compatibility matrix: the newest release opens every
   older minor fixture, and the oldest supported minor opens the newest fixture.
 
-### A — major (e.g. 1.9.0 → 2.0.0)
+### `A` — major (for example 1.9.0 → 2.0.0)
 
-- The on-disk format and/or the API may be incompatible in any way.
-- **Direct read by a previous A is not guaranteed.** Opening an old database
-  with the new A requires an explicit upgrade command/API. Opening a new
-  database with an old A is not supported.
-- Upgrade requirements:
-  - `VelxoDatabase.upgradeSync(path)` (or CLI) is the only path. It must create
-    an **in-place undo journal** before touching data, validate the result, and
-    switch atomically.
-  - The undo journal is not a copy of the database. Each mutation records the
-    original byte range it replaces, plus the full content of files it deletes
-    and the names of files it creates. Entries are flushed before the mutation.
-    `VelxoDatabase.rollbackUpgradeSync(path)` applies them in reverse and
-    restores the exact pre-upgrade bytes.
-  - A downgrade path is therefore built in: roll back with the journal, then
-    open with the previous A. The journal may be discarded once the upgrade is
-    accepted.
-  - An interrupted upgrade leaves the journal in place; opening fails with
-    `VelxoUpgradeRequiredException` until it is rolled back or retried.
-  - Opening without upgrading fails with `VelxoUpgradeRequiredException`;
-    opening a database from a newer A fails with `VelxoIncompatibleException`.
-- API may change freely. Every breaking change must be documented in the
-  changelog and the upgrade guide.
+- The format and/or the API may change in any way. Direct read by a previous `A`
+  is not guaranteed.
+- Opening an older database with a newer `A` requires an **explicit upgrade**;
+  opening a newer database with an older `A` is refused.
+- `VelxoDatabase.upgradeSync(path)` is the only upgrade entry point:
+  1. it refuses when an `UPGRADE-JOURNAL` is already present;
+  2. it writes an **in-place undo journal** before touching data — original byte
+     ranges plus the original length of every file it changes, and the full
+     content of files it deletes;
+  3. it switches atomically (manifest generation or stamp rename);
+  4. it validates the result before reporting success.
+- `VelxoDatabase.rollbackUpgradeSync(path)` applies the journal in reverse and
+  restores the exact pre-upgrade bytes. The journal is a reverse diff, not a
+  copy of the database.
+- An interrupted upgrade leaves the journal behind; opening fails with
+  `VelxoUpgradeRequiredException` until it is rolled back (or the upgrade is
+  retried). A torn journal header that recorded no entries is safe to discard.
+- Opening without upgrading raises `VelxoUpgradeRequiredException`; opening a
+  database from a newer `A` raises `VelxoIncompatibleException`.
+- Every breaking API change must be documented in the changelog and an upgrade
+  guide.
 
 ## Interoperability matrix
 
 | Writer | Reader | Result |
 | --- | --- | --- |
-| same A, any B/C | same A, any B/C | opens directly, no action |
-| older A | newer A | `VelxoUpgradeRequiredException` until explicit upgrade |
-| newer A | older A | `VelxoIncompatibleException`; restore the backup instead |
-| any | external direct reader | only guaranteed within the documented format version |
+| same `A`, any `B.C` | same `A`, any `B.C` | opens directly, no action |
+| older `A` | newer `A` | `VelxoUpgradeRequiredException` until `upgradeSync` |
+| newer `A` | older `A` | `VelxoIncompatibleException`; restore a backup instead |
+| any release | external direct reader | only the documented format version |
 
 ## Format stamp
 
@@ -84,28 +96,54 @@ The database root contains `FORMAT`:
 
 ```
 offset 0..3   magic  "VXFM"
-offset 4..5   format major, little endian u16
-offset 6..7   format minor, little endian u16
-offset 8..11  CRC-32C of bytes 0..7, little endian u32
+offset 4..5   format major, little-endian u16
+offset 6..7   format minor, little-endian u16
+offset 8..11  CRC-32C of bytes 0..7, little-endian u32
 ```
 
-- Missing stamp: treat as `1.0` (databases created before stamping). A writable
-  open writes the current stamp; a read-only open does not modify the directory.
+- The stamp is written atomically: a temporary file is renamed over the previous
+  stamp, so a crash leaves either the old stamp or the new one, never a torn
+  one. (An earlier build wrote it in place; a torn stamp made a healthy database
+  unreadable. That is the reason for the rule.)
+- A missing stamp means a database created before stamping: it is treated as
+  `1.0` and stamped on the next writable open. A read-only open never writes.
 - `major` newer than the library: `VelxoIncompatibleException`.
-- `major` older than the library: `VelxoUpgradeRequiredException` unless an
-  explicit migration for that major is registered and `upgradeSync` runs.
-- Same `major`, any `minor`: open normally. A writable open upgrades an older
-  minor stamp to the current minor; a newer minor stamp is left untouched.
-- An `UPGRADE-JOURNAL` in the root means a major upgrade did not finish. Opening
+- `major` older than the library: `VelxoUpgradeRequiredException` unless the
+  release that supports that major is used.
+- Same `major`, any `minor`: opens normally. A writable open upgrades an older
+  minor stamp to the current minor; a newer minor stamp is left untouched (the
+  older release must be able to read it, per the `B` rules).
+- An `UPGRADE-JOURNAL` at the root means a major upgrade did not finish: opening
   raises `VelxoUpgradeRequiredException` until
   `VelxoDatabase.rollbackUpgradeSync(path)` restores the original bytes.
 
+## State of this release
+
+`1.0.0` writes format `1.0`. It is the first public release, so there is no
+older major to upgrade from and no migration is registered. The journal, the
+`upgradeSync` entry point and the rollback path are implemented and tested; the
+first `2.0.0` migration must use them rather than inventing another mechanism.
+`upgradeSync` on an older major currently raises
+`VelxoUpgradeRequiredException` with the message that no migration is registered.
+
+## Catalog versions
+
+The catalog carries its own `catalogVersion`. It is part of the on-disk
+contract, not a free counter: a decoder rejects a version it does not know.
+Consequently, a `B` release may only change the catalog in a way an older
+release in the same `A` can still parse — today the decoder requires exact
+consumption of the file, so appending a new section is **not** a `B` change
+unless a decoder that ignores trailing data is introduced first. Treat a
+catalog layout change as an `A` change until that compatibility layer exists,
+and keep `catalogVersion` and `formatMinor` in step when it does.
+
 ## Release procedure
 
-1. Classify the change as A, B or C against this policy.
+1. Classify the change against the table above before writing code.
 2. Update `formatMajor` / `formatMinor` in `lib/src/version.dart` when the
-   on-disk contract changes; update the package version accordingly.
-3. Add fixtures: for B, old and new bytes plus the bidirectional matrix; for A,
-   an upgrade fixture and a restored-backup fixture.
-4. Run the full CI matrix (Linux, macOS, Windows, Chrome, wasm, crash matrix).
-5. Update `CHANGELOG.md` and, for A, the upgrade/downgrade guide.
+   on-disk contract changes, and the package version accordingly.
+3. Add fixtures: for `B`, old and new bytes plus the bidirectional matrix; for
+   `A`, an upgrade fixture and a restored-backup fixture.
+4. Run the full CI matrix: Linux, macOS, Windows, Chrome, wasm, crash matrix,
+   benchmarks.
+5. Update `CHANGELOG.md` and, for `A`, the upgrade/downgrade guide.

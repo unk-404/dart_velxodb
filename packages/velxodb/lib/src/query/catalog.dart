@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import '../errors.dart';
@@ -14,7 +15,14 @@ import 'relation.dart';
 const int catalogMagic = 0x43;
 
 /// Catalog format version written by this build.
-const int catalogVersion = 5;
+///
+/// Version 6 stores collection and relation names as UTF-8 bytes (version 5
+/// stored raw UTF-16 code units, which silently truncated non-ASCII names) and
+/// records whether each index finished backfilling.
+const int catalogVersion = 6;
+
+/// Version 5 and older wrote names as UTF-16 code units.
+const int _catalogVersionLegacyNames = 5;
 
 /// Name of the catalog file.
 const String catalogFileName = 'CATALOG';
@@ -116,30 +124,78 @@ final class Catalog {
     if (next > 0xFFFE) {
       throw StateError('collection id space exhausted');
     }
-    return Catalog(<CollectionEntry>[
-      ...entries,
-      CollectionEntry(next, name),
-    ], indexes, references, relations, textIndexes);
+    return Catalog(
+      <CollectionEntry>[...entries, CollectionEntry(next, name)],
+      indexes,
+      references,
+      relations,
+      textIndexes,
+    );
   }
 
   /// Returns a catalog with an index added for `(collectionId, fieldId)`.
-  Catalog withIndex(int collectionId, int fieldId, VxsType type) {
+  ///
+  /// [ready] starts `false` while the backfill is running; queries ignore such
+  /// an index until [withIndexReady] marks it complete.
+  Catalog withIndex(
+    int collectionId,
+    int fieldId,
+    VxsType type, {
+    bool ready = true,
+  }) {
     final existing = indexFor(collectionId, fieldId);
     if (existing != null) return this;
+    if (!_indexable(type)) {
+      throw ArgumentError.value(
+        type,
+        'type',
+        'indexes support int32, int64, string and boolean',
+      );
+    }
     final next = nextId();
     if (next > 0xFFFE) {
       throw StateError('index id space exhausted');
     }
-    return Catalog(entries, <IndexDefinition>[
-      ...indexes,
-      IndexDefinition(
-        collectionId: collectionId,
-        fieldId: fieldId,
-        type: type,
-        indexId: next,
-      ),
-    ], references, relations, textIndexes);
+    return Catalog(
+      entries,
+      <IndexDefinition>[
+        ...indexes,
+        IndexDefinition(
+          collectionId: collectionId,
+          fieldId: fieldId,
+          type: type,
+          indexId: next,
+          ready: ready,
+        ),
+      ],
+      references,
+      relations,
+      textIndexes,
+    );
   }
+
+  /// Returns a catalog where an index's `ready` flag is changed.
+  Catalog withIndexReady(int collectionId, int fieldId, bool ready) {
+    if (indexFor(collectionId, fieldId) == null) return this;
+    return Catalog(
+      entries,
+      <IndexDefinition>[
+        for (final index in indexes)
+          index.collectionId == collectionId && index.fieldId == fieldId
+              ? index.withReady(ready)
+              : index,
+      ],
+      references,
+      relations,
+      textIndexes,
+    );
+  }
+
+  static bool _indexable(VxsType type) =>
+      type == VxsType.int32 ||
+      type == VxsType.int64 ||
+      type == VxsType.string ||
+      type == VxsType.boolean;
 
   /// Finds the full-text index for `(collectionId, fieldId)`, or `null`.
   TextIndexDefinition? textIndexFor(int collectionId, int fieldId) {
@@ -156,22 +212,47 @@ final class Catalog {
   Catalog withTextIndex(
     int collectionId,
     int fieldId,
-    Tokenizer tokenizer,
-  ) {
+    Tokenizer tokenizer, {
+    bool ready = true,
+  }) {
     if (textIndexFor(collectionId, fieldId) != null) return this;
     final next = nextId();
     if (next > 0xFFFE) {
       throw StateError('text index id space exhausted');
     }
-    return Catalog(entries, indexes, references, relations, <TextIndexDefinition>[
-      ...textIndexes,
-      TextIndexDefinition(
-        collectionId: collectionId,
-        fieldId: fieldId,
-        indexId: next,
-        tokenizer: tokenizer,
-      ),
-    ]);
+    return Catalog(
+      entries,
+      indexes,
+      references,
+      relations,
+      <TextIndexDefinition>[
+        ...textIndexes,
+        TextIndexDefinition(
+          collectionId: collectionId,
+          fieldId: fieldId,
+          indexId: next,
+          tokenizer: tokenizer,
+          ready: ready,
+        ),
+      ],
+    );
+  }
+
+  /// Returns a catalog where a text index's `ready` flag is changed.
+  Catalog withTextIndexReady(int collectionId, int fieldId, bool ready) {
+    if (textIndexFor(collectionId, fieldId) == null) return this;
+    return Catalog(
+      entries,
+      indexes,
+      references,
+      relations,
+      <TextIndexDefinition>[
+        for (final textIndex in textIndexes)
+          textIndex.collectionId == collectionId && textIndex.fieldId == fieldId
+              ? textIndex.withReady(ready)
+              : textIndex,
+      ],
+    );
   }
 
   /// Finds the id of relation [name], or `null`.
@@ -222,44 +303,62 @@ final class Catalog {
     OnDelete onDelete,
   ) {
     if (referenceFor(sourceCollectionId, fieldId) != null) return this;
-    return Catalog(entries, indexes, <ReferenceDefinition>[
-      ...references,
-      ReferenceDefinition(
-        sourceCollectionId: sourceCollectionId,
-        fieldId: fieldId,
-        targetCollectionId: targetCollectionId,
-        onDelete: onDelete,
-      ),
-    ], relations, textIndexes);
+    return Catalog(
+      entries,
+      indexes,
+      <ReferenceDefinition>[
+        ...references,
+        ReferenceDefinition(
+          sourceCollectionId: sourceCollectionId,
+          fieldId: fieldId,
+          targetCollectionId: targetCollectionId,
+          onDelete: onDelete,
+        ),
+      ],
+      relations,
+      textIndexes,
+    );
   }
+
+  /// Returns a catalog with [_nameBytes] appended.
+  ///
+  /// Names are UTF-8 on disk. Earlier catalog versions wrote UTF-16 code units
+  /// truncated to one byte each, which corrupted every non-ASCII name.
+  static List<int> _encodeName(String name) => utf8.encode(name);
 
   /// Serializes the catalog.
   Uint8List encode() {
+    final collectionNames = <List<int>>[
+      for (final e in entries) _encodeName(e.name),
+    ];
+    final relationNames = <List<int>>[
+      for (final relation in relations) _encodeName(relation.name),
+    ];
     var size = 8 + 4;
-    for (final entry in entries) {
-      size += 4 + entry.name.length;
+    for (final name in collectionNames) {
+      size += 4 + name.length;
     }
-    size += 4 + indexes.length * 7;
+    size += 4 + indexes.length * 8;
     size += 4 + references.length * 7;
     size += 4 + relations.length * 4;
-    for (final relation in relations) {
-      size += relation.name.length;
+    for (final name in relationNames) {
+      size += name.length;
     }
-    size += 4 + textIndexes.length * 8;
+    size += 4 + textIndexes.length * 9;
     final out = Uint8List(size);
     out[0] = catalogMagic;
     out[1] = catalogVersion;
     VxsLe.w16(out, 2, 0);
     VxsLe.w32(out, 4, entries.length);
     var pos = 8;
-    for (final entry in entries) {
+    for (var i = 0; i < entries.length; i++) {
+      final entry = entries[i];
       VxsLe.w16(out, pos, entry.id);
       pos += 2;
-      VxsLe.w16(out, pos, entry.name.length);
+      VxsLe.w16(out, pos, collectionNames[i].length);
       pos += 2;
-      final nameBytes = entry.name.codeUnits;
-      out.setRange(pos, pos + nameBytes.length, nameBytes);
-      pos += nameBytes.length;
+      out.setRange(pos, pos + collectionNames[i].length, collectionNames[i]);
+      pos += collectionNames[i].length;
     }
     VxsLe.w32(out, pos, indexes.length);
     pos += 4;
@@ -271,6 +370,7 @@ final class Catalog {
       out[pos++] = index.type.index;
       VxsLe.w16(out, pos, index.indexId);
       pos += 2;
+      out[pos++] = index.ready ? 1 : 0;
     }
     VxsLe.w32(out, pos, references.length);
     pos += 4;
@@ -285,14 +385,14 @@ final class Catalog {
     }
     VxsLe.w32(out, pos, relations.length);
     pos += 4;
-    for (final relation in relations) {
+    for (var i = 0; i < relations.length; i++) {
+      final relation = relations[i];
       VxsLe.w16(out, pos, relation.id);
       pos += 2;
-      VxsLe.w16(out, pos, relation.name.length);
+      VxsLe.w16(out, pos, relationNames[i].length);
       pos += 2;
-      final nameBytes = relation.name.codeUnits;
-      out.setRange(pos, pos + nameBytes.length, nameBytes);
-      pos += nameBytes.length;
+      out.setRange(pos, pos + relationNames[i].length, relationNames[i]);
+      pos += relationNames[i].length;
     }
     VxsLe.w32(out, pos, textIndexes.length);
     pos += 4;
@@ -305,12 +405,17 @@ final class Catalog {
       pos += 2;
       out[pos++] = textIndex.tokenizer.kindCode;
       out[pos++] = textIndex.tokenizer.ngramSize;
+      out[pos++] = textIndex.ready ? 1 : 0;
     }
     VxsLe.w32(out, pos, VxsCrc32c.compute(out, 0, pos));
     return out;
   }
 
-  /// Parses a catalog. Version 1 files (no indexes) are still readable.
+  /// Parses a catalog.
+  ///
+  /// Versions 1–5 are still readable. Version 5 and older stored names as
+  /// UTF-16 code units, which only round-trips ASCII; that is why version 6
+  /// exists.
   static Catalog decode(Uint8List bytes) {
     if (bytes.length < 12) {
       throw const VxsFormatException('catalog too short');
@@ -322,6 +427,7 @@ final class Catalog {
     if (version < 1 || version > catalogVersion) {
       throw VxsFormatException('unsupported catalog version $version');
     }
+    final legacyNames = version <= _catalogVersionLegacyNames;
     final bodyEnd = bytes.length - 4;
     if (VxsLe.u32(bytes, bodyEnd) != VxsCrc32c.compute(bytes, 0, bodyEnd)) {
       throw const VxsFormatException('catalog checksum mismatch');
@@ -340,7 +446,7 @@ final class Catalog {
       if (pos + nameLength > bodyEnd) {
         throw const VxsFormatException('truncated catalog entry');
       }
-      final name = String.fromCharCodes(bytes, pos, pos + nameLength);
+      final name = _decodeName(bytes, pos, pos + nameLength, legacyNames);
       pos += nameLength;
       entries.add(CollectionEntry(id, name));
     }
@@ -351,8 +457,9 @@ final class Catalog {
       }
       final indexCount = VxsLe.u32(bytes, pos);
       pos += 4;
+      final encodedSize = version >= 6 ? 8 : 7;
       for (var i = 0; i < indexCount; i++) {
-        if (pos + 7 > bodyEnd) {
+        if (pos + encodedSize > bodyEnd) {
           throw const VxsFormatException('truncated catalog index');
         }
         final collectionId = VxsLe.u16(bytes, pos);
@@ -365,12 +472,14 @@ final class Catalog {
         }
         final indexId = VxsLe.u16(bytes, pos);
         pos += 2;
+        final ready = version >= 6 ? bytes[pos++] != 0 : true;
         indexes.add(
           IndexDefinition(
             collectionId: collectionId,
             fieldId: fieldId,
             type: VxsType.values[typeCode],
             indexId: indexId,
+            ready: ready,
           ),
         );
       }
@@ -424,7 +533,7 @@ final class Catalog {
         if (pos + nameLength > bodyEnd) {
           throw const VxsFormatException('truncated catalog relation');
         }
-        final name = String.fromCharCodes(bytes, pos, pos + nameLength);
+        final name = _decodeName(bytes, pos, pos + nameLength, legacyNames);
         pos += nameLength;
         relations.add(RelationDefinition(id, name));
       }
@@ -436,8 +545,9 @@ final class Catalog {
       }
       final textIndexCount = VxsLe.u32(bytes, pos);
       pos += 4;
+      final encodedSize = version >= 6 ? 9 : 8;
       for (var i = 0; i < textIndexCount; i++) {
-        if (pos + 8 > bodyEnd) {
+        if (pos + encodedSize > bodyEnd) {
           throw const VxsFormatException('truncated catalog text index');
         }
         final collectionId = VxsLe.u16(bytes, pos);
@@ -448,12 +558,14 @@ final class Catalog {
         pos += 2;
         final kind = bytes[pos++];
         final ngram = bytes[pos++];
+        final ready = version >= 6 ? bytes[pos++] != 0 : true;
         textIndexes.add(
           TextIndexDefinition(
             collectionId: collectionId,
             fieldId: fieldId,
             indexId: indexId,
             tokenizer: tokenizerFrom(kind, ngram),
+            ready: ready,
           ),
         );
       }
@@ -462,6 +574,16 @@ final class Catalog {
       throw const VxsFormatException('trailing bytes in catalog');
     }
     return Catalog(entries, indexes, references, relations, textIndexes);
+  }
+
+  static String _decodeName(
+    Uint8List bytes,
+    int start,
+    int end,
+    bool legacyCodeUnits,
+  ) {
+    if (legacyCodeUnits) return String.fromCharCodes(bytes, start, end);
+    return utf8.decode(Uint8List.sublistView(bytes, start, end));
   }
 }
 
@@ -489,6 +611,11 @@ final class CatalogStore {
     } on VxsFormatException {
       throw const VelxoCorruptException(
         'catalog is corrupt; refusing to open the database',
+      );
+    } on FormatException {
+      // A UTF-8 name failed to decode; the bytes are corrupt, not a new format.
+      throw const VelxoCorruptException(
+        'catalog has an invalid name; refusing to open the database',
       );
     } finally {
       file.closeSync();

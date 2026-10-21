@@ -29,8 +29,7 @@ final class NodeRef {
   const NodeRef(this.collectionId, this.key);
 
   /// Creates a node reference for [key] in [collection].
-  NodeRef.of(Collection collection, this.key)
-    : collectionId = collection.id;
+  NodeRef.of(Collection collection, this.key) : collectionId = collection.id;
 
   /// Collection id the document lives in.
   final int collectionId;
@@ -53,10 +52,7 @@ final class NodeRef {
       throw ArgumentError('node reference is too short');
     }
     final collectionId = (bytes[0] << 8) | bytes[1];
-    return NodeRef(
-      collectionId,
-      Uint8List.sublistView(bytes, 2, bytes.length),
-    );
+    return NodeRef(collectionId, Uint8List.sublistView(bytes, 2, bytes.length));
   }
 
   @override
@@ -96,7 +92,8 @@ enum EdgeDirection {
 }
 
 /// One stored edge.
-final class GraphEdge {  /// Creates an edge.
+final class GraphEdge {
+  /// Creates an edge.
   const GraphEdge({
     required this.relation,
     required this.from,
@@ -144,12 +141,7 @@ final class GraphStore {
 
   /// Links [from] to [to] under [relation], replacing properties if the edge
   /// already exists.
-  void link(
-    String relation,
-    NodeRef from,
-    NodeRef to, {
-    Bytes? properties,
-  }) {
+  void link(String relation, NodeRef from, NodeRef to, {Bytes? properties}) {
     final relationId = _catalog.relationId(relation);
     final props = properties ?? _empty;
     final fromBytes = from.encode();
@@ -182,12 +174,7 @@ final class GraphStore {
   bool has(String relation, NodeRef from, NodeRef to) {
     final relationId = _relationIdOrNull(relation);
     if (relationId == null) return false;
-    final key = _edgeKey(
-      relationId,
-      _forward,
-      from.encode(),
-      to.encode(),
-    );
+    final key = _edgeKey(relationId, _forward, from.encode(), to.encode());
     return engine.get(key) != null;
   }
 
@@ -271,7 +258,11 @@ final class GraphStore {
       final next = <NodeRef>[];
       for (final node in frontier) {
         for (final name in names) {
-          for (final neighbour in neighbours(name, node, direction: direction)) {
+          for (final neighbour in neighbours(
+            name,
+            node,
+            direction: direction,
+          )) {
             if (visited.add(neighbour)) next.add(neighbour);
           }
         }
@@ -282,7 +273,8 @@ final class GraphStore {
     }
     return GraphWalk(
       levels: levels,
-      truncated: levels.length - 1 == maxDepth && frontier.isNotEmpty,
+      truncated:
+          maxDepth > 0 && levels.length - 1 == maxDepth && frontier.isNotEmpty,
     );
   }
 

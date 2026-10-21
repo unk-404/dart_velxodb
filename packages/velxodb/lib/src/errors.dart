@@ -45,6 +45,15 @@ final class VelxoConflictException extends VelxoException {
   const VelxoConflictException(super.message);
 }
 
+/// A write violated a declared constraint, such as a reference binding.
+///
+/// Kept separate from [VelxoConflictException] so an application can tell "try
+/// again / you are nesting transactions" apart from "this write is not allowed".
+final class VelxoConstraintException extends VelxoException {
+  /// Creates a constraint error.
+  const VelxoConstraintException(super.message);
+}
+
 /// A requested resource (index, text index, target collection) is missing.
 final class VelxoNotFoundException extends VelxoException {
   /// Creates a not-found error.

@@ -105,6 +105,12 @@ final class StorageEngine {
   Manifest? _manifest;
   int _nextSegmentId = 1;
   bool _closed = false;
+  bool _recoveredFromWal = false;
+
+  /// Whether the last [openSync] rebuilt the state from the WAL because no
+  /// manifest slot decoded. Orphan segment files are kept and reported by
+  /// [checkSync]; a caller can use this flag to surface the event.
+  bool get recoveredFromWal => _recoveredFromWal;
 
   /// Threshold at which [shouldFlush] becomes true.
   final int maxMemtableBytes;
@@ -171,6 +177,10 @@ final class StorageEngine {
   int get generation => _manifest?.generation ?? 0;
 
   /// Bytes of document payload plus keys currently held in memory.
+  ///
+  /// The threshold budget is payload + key bytes, not the memtable's array
+  /// capacity: capacity is preallocated and would make an empty engine look
+  /// full.
   int get memoryBytes => _arena.bytesUsed + _memtable.keyBytes;
 
   /// Whether the write buffer should be flushed to a segment.
@@ -178,10 +188,32 @@ final class StorageEngine {
 
   /// Loads the manifest and replays the WAL. Call once before serving reads.
   void openSync() {
-    final store = ManifestStore(_directory);    final manifest = store.loadSync();
+    final store = ManifestStore(_directory);
+    final sawManifest = ManifestStore.slotNames.any(_directory.existsSync);
+    // A single torn slot with a non-empty WAL is the signature of a crash in
+    // the very first manifest write: the WAL was not truncated yet, so every
+    // record is still there. Two bad slots are real corruption and stay fatal.
+    final manifest = store.loadSync(
+      allowTornSingleSlot: !readOnly && _walFile.lengthSync > 0,
+    );
+    if (manifest == null && sawManifest) {
+      // Keep the database writable: the unusable slots cannot be part of the
+      // next generation, and the WAL replay below reconstructs the state.
+      _recoveredFromWal = true;
+      for (final name in ManifestStore.slotNames) {
+        if (_directory.existsSync(name)) _directory.deleteSync(name);
+      }
+    }
     if (manifest != null) {
       _manifest = manifest;
       for (final info in manifest.segments) {
+        // The manifest is data; a corrupted or hostile name must never escape
+        // the database directory through mapSync.
+        if (!_segmentNamePattern.hasMatch(info.name)) {
+          throw VelxoCorruptException(
+            'manifest references an invalid segment name: ${info.name}',
+          );
+        }
         // Segments are immutable: map them instead of copying. The view stays
         // valid until close(), which unmaps after the engine stops serving.
         final mapped = _directory.mapSync(info.name);
@@ -193,10 +225,7 @@ final class StorageEngine {
           _trackSegmentId(info.name);
         } on Object catch (error) {
           mapped.closeSync();
-          throw VelxoCorruptException(
-            'segment ${info.name} is corrupt',
-            error,
-          );
+          throw VelxoCorruptException('segment ${info.name} is corrupt', error);
         }
       }
     }
@@ -253,9 +282,8 @@ final class StorageEngine {
   }
 
   /// Async facade over [putManySync].
-  Future<void> putMany(
-    List<({Uint8List key, Bytes document})> entries,
-  ) async => putManySync(entries);
+  Future<void> putMany(List<({Uint8List key, Bytes document})> entries) async =>
+      putManySync(entries);
 
   /// Deletes [key]. Deleting a missing key is allowed.
   ///
@@ -277,6 +305,12 @@ final class StorageEngine {
 
   /// Whether a transaction is currently open.
   bool get inTransaction => _txOps != null;
+
+  /// Writes buffered by the open transaction, or `null` outside one.
+  ///
+  /// Query code uses this to make index lookups see the transaction's own
+  /// pending postings; scans still do not see uncommitted data.
+  Iterable<WalOp>? get transactionOps => _txOps?.values;
 
   /// Runs [body] as one atomic transaction.
   ///
@@ -365,7 +399,9 @@ final class StorageEngine {
     }
     final ref = _memtable.get(key);
     if (ref != null) {
-      return ref.length < 0 ? null : _arena.view(ref.chunk, ref.offset, ref.length);
+      return ref.length < 0
+          ? null
+          : _arena.view(ref.chunk, ref.offset, ref.length);
     }
     for (var i = _segments.length - 1; i >= 0; i--) {
       final hit = _segments[i].lookup(key);
@@ -391,7 +427,10 @@ final class StorageEngine {
         builder.add(key, _arena.view(chunk, offset, length));
       }
     });
-    final info = _writeSegment(builder.finish().asUint8List(), builder.docCount);
+    final info = _writeSegment(
+      builder.finish().asUint8List(),
+      builder.docCount,
+    );
 
     // Commit point passed: the WAL is no longer needed.
     _walFile.truncateSync(0);
@@ -412,16 +451,41 @@ final class StorageEngine {
 
   SegmentInfo _writeSegment(Uint8List bytes, int entryCount) {
     final name = _segmentName(_nextSegmentId++);
-    _writeFile(name, bytes);
+    try {
+      _writeFile(name, bytes);
+    } on Object {
+      // A partial segment file must not outlive the failed write.
+      if (_directory.existsSync(name)) _directory.deleteSync(name);
+      rethrow;
+    }
     final info = SegmentInfo(
       name: name,
       entryCount: entryCount,
       byteLength: bytes.length,
     );
-    _manifest = ManifestStore(_directory).saveSync(<SegmentInfo>[
-      ..._segmentInfos,
-      info,
-    ]);
+    try {
+      _manifest = ManifestStore(_directory)
+          .saveSync(<SegmentInfo>[..._segmentInfos, info]);
+    } on Object {
+      // The manifest is the commit point. If it did not land, the segment is
+      // invisible, so remove the file instead of accumulating orphans. A
+      // partially written manifest may still decode on the next open, so only
+      // delete when no readable manifest references the segment. No readable
+      // manifest means nothing references it.
+      var referenced = true;
+      try {
+        final current = ManifestStore(_directory).loadSync();
+        referenced =
+            current != null &&
+            current.segments.any((segment) => segment.name == name);
+      } on VelxoCorruptException {
+        referenced = false;
+      } on Object {
+        referenced = true;
+      }
+      if (!referenced) _directory.deleteSync(name);
+      rethrow;
+    }
     _segments.add(SegmentReader(bytes));
     _segmentInfos.add(info);
     return info;
@@ -440,7 +504,9 @@ final class StorageEngine {
       if (length < 0) {
         ops.add(WalOp.delete(key));
       } else {
-        ops.add(WalOp.put(key, _arena.view(chunk, offset, length).asUint8List()));
+        ops.add(
+          WalOp.put(key, _arena.view(chunk, offset, length).asUint8List()),
+        );
       }
     });
     return WalBatch.encode(ops);
@@ -583,14 +649,24 @@ final class StorageEngine {
   void closeSync() {
     if (_closed) return;
     _closed = true;
-    if (!readOnly) _walFile.flushSync();
-    _walFile.closeSync();
-    for (final mapped in _segmentMaps) {
-      mapped.closeSync();
+    try {
+      if (!readOnly) _walFile.flushSync();
+    } finally {
+      try {
+        _walFile.closeSync();
+      } finally {
+        for (final mapped in _segmentMaps) {
+          try {
+            mapped.closeSync();
+          } on Object {
+            // Keep unmapping the rest; the directory lock must be released.
+          }
+        }
+        _segmentMaps.clear();
+        _segments.clear();
+        _directory.closeSync();
+      }
     }
-    _segmentMaps.clear();
-    _segments.clear();
-    _directory.closeSync();
   }
 
   /// Async facade over [closeSync].
@@ -605,10 +681,21 @@ final class StorageEngine {
     _checkOpen();
     final issues = <CheckIssue>[];
     final stats = <String, int>{};
+    if (_recoveredFromWal) {
+      issues.add(
+        const CheckIssue(
+          CheckSeverity.warning,
+          'wal-only-recovery',
+          'no manifest slot decoded on open; state was rebuilt from the WAL. '
+              'Orphan segment files, if any, were kept for inspection',
+        ),
+      );
+    }
 
     final segmentNames = <String>[
       for (final name in _directory.listSync())
-        if (name.startsWith(segmentPrefix) && name.endsWith(segmentSuffix)) name,
+        if (name.startsWith(segmentPrefix) && name.endsWith(segmentSuffix))
+          name,
     ];
     stats['segmentFiles'] = segmentNames.length;
 
@@ -622,7 +709,9 @@ final class StorageEngine {
     }
 
     if (manifest == null) {
-      if (segmentNames.isNotEmpty) {
+      // A recovered database has no manifest until its first flush; that is
+      // reported by the wal-only-recovery warning above, not as an error.
+      if (segmentNames.isNotEmpty && !_recoveredFromWal) {
         issues.add(
           const CheckIssue(
             CheckSeverity.error,
@@ -682,9 +771,7 @@ final class StorageEngine {
       if (verifyBlocks) stats['documents'] = documents;
       for (final name in segmentNames) {
         if (!referenced.contains(name)) {
-          issues.add(
-            CheckIssue(CheckSeverity.warning, 'orphan-segment', name),
-          );
+          issues.add(CheckIssue(CheckSeverity.warning, 'orphan-segment', name));
         }
       }
     }
@@ -756,6 +843,8 @@ final class StorageEngine {
 
   static String _segmentName(int id) =>
       '$segmentPrefix${id.toString().padLeft(6, '0')}$segmentSuffix';
+
+  static final RegExp _segmentNamePattern = RegExp(r'^SEG-[0-9]{6,}\.seg$');
 
   void _checkOpen() {
     if (_closed) throw const VelxoClosedException('engine is closed');

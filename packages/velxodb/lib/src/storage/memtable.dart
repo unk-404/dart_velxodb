@@ -150,7 +150,12 @@ final class MemTable {
   ) {
     var index = _heads[0];
     while (index >= 0) {
-      visit(keyAt(index), _valueChunks[index], _valueOffsets[index], _valueLengths[index]);
+      visit(
+        keyAt(index),
+        _valueChunks[index],
+        _valueOffsets[index],
+        _valueLengths[index],
+      );
       index = _levels[0][index];
     }
   }
@@ -169,7 +174,9 @@ final class MemTable {
     var index = _firstAtOrAfter(lower);
     while (index >= 0) {
       final key = keyAt(index);
-      if (lower != null && !includeLower && _compareKeyToEntry(lower, index) == 0) {
+      if (lower != null &&
+          !includeLower &&
+          _compareKeyToEntry(lower, index) == 0) {
         index = _levels[0][index];
         continue;
       }
@@ -177,7 +184,12 @@ final class MemTable {
         final comparison = _compareKeyToEntry(upper, index);
         if (comparison > 0 || (comparison == 0 && !includeUpper)) break;
       }
-      visit(key, _valueChunks[index], _valueOffsets[index], _valueLengths[index]);
+      visit(
+        key,
+        _valueChunks[index],
+        _valueOffsets[index],
+        _valueLengths[index],
+      );
       index = _levels[0][index];
     }
   }
@@ -314,13 +326,7 @@ final class MemTable {
     _topLevel = 0;
   }
 
-  int _appendEntry(
-    Uint8List key,
-    int hash,
-    int chunk,
-    int offset,
-    int length,
-  ) {
+  int _appendEntry(Uint8List key, int hash, int chunk, int offset, int length) {
     final index = _count;
     if (index == _hashes.length) {
       _growEntries();

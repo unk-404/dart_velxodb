@@ -3,19 +3,20 @@ library;
 
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/velxodb.dart';
 
 Uint8List key(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text) => (DocBuilder(schemaId: 1)..putString(1, text)).finish();
+Bytes doc(String text) =>
+    (DocBuilder(schemaId: 1)..putString(1, text)).finish();
 
-Bytes indexedDoc(String text, String sender) => (DocBuilder(schemaId: 1)
-      ..putString(1, text)
-      ..putString(2, sender))
-    .finish();
+Bytes indexedDoc(String text, String sender) =>
+    (DocBuilder(schemaId: 1)
+          ..putString(1, text)
+          ..putString(2, sender))
+        .finish();
 
 String? textOf(Bytes? value) =>
     value == null ? null : DocView.parse(value.asUint8List()).getString(1);
@@ -87,25 +88,28 @@ void main() {
     await db.close();
   });
 
-  test('web write transactions commit documents and indexes atomically', () async {
-    final root = 'velxodb-tx-${DateTime.now().microsecondsSinceEpoch}';
-    final db = await VelxoWebDatabase.open(root: root);
-    final items = await db.collection('items');
-    await items.createIndex(2, VxsType.string);
+  test(
+    'web write transactions commit documents and indexes atomically',
+    () async {
+      final root = 'velxodb-tx-${DateTime.now().microsecondsSinceEpoch}';
+      final db = await VelxoWebDatabase.open(root: root);
+      final items = await db.collection('items');
+      await items.createIndex(2, VxsType.string);
 
-    await db.writeTxn((tx) async {
-      await tx.put(items, key('a'), indexedDoc('alpha', 'u1'));
-      await tx.put(items, key('b'), indexedDoc('beta', 'u1'));
-      expect(textOf(await tx.get(items, key('a'))), 'alpha');
-    });
+      await db.writeTxn((tx) async {
+        await tx.put(items, key('a'), indexedDoc('alpha', 'u1'));
+        await tx.put(items, key('b'), indexedDoc('beta', 'u1'));
+        expect(textOf(await tx.get(items, key('a'))), 'alpha');
+      });
 
-    expect((await items.lookupByIndex(2, 'u1')).length, 2);
-    await db.writeTxn((tx) async {
-      await tx.delete(items, key('a'));
-    });
-    expect((await items.lookupByIndex(2, 'u1')).length, 1);
-    await db.close();
-  });
+      expect((await items.lookupByIndex(2, 'u1')).length, 2);
+      await db.writeTxn((tx) async {
+        await tx.delete(items, key('a'));
+      });
+      expect((await items.lookupByIndex(2, 'u1')).length, 1);
+      await db.close();
+    },
+  );
 
   test('web references validate and restrict deletes', () async {
     final root = 'velxodb-ref-${DateTime.now().microsecondsSinceEpoch}';
@@ -113,20 +117,18 @@ void main() {
     final users = await db.collection('users');
     final messages = await db.collection('messages');
     await messages.createReference(2, 'users');
+    messages.enforceReferences = true;
 
     await expectLater(
       messages.put(key('m1'), indexedDoc('hello', 'u1')),
-      throwsA(isA<StateError>()),
+      throwsA(isA<VelxoConstraintException>()),
     );
     await users.put(key('u1'), doc('user'));
     await messages.put(key('m1'), indexedDoc('hello', 'u1'));
-    expect(
-      (await messages.lookupByIndex(2, 'u1')).length,
-      1,
-    );
+    expect((await messages.lookupByIndex(2, 'u1')).length, 1);
     await expectLater(
       users.delete(key('u1')),
-      throwsA(isA<StateError>()),
+      throwsA(isA<VelxoConstraintException>()),
     );
     await db.close();
   });
@@ -172,6 +174,129 @@ void main() {
     await db.graph.unlink('follows', u1, u2);
     expect(await db.graph.outgoing('follows', u1), isEmpty);
     await db.close();
+  });
+
+  test(
+    'web cascade survives a cycle and sees in-transaction referrers',
+    () async {
+      final root = 'velxodb-refcycle-${DateTime.now().microsecondsSinceEpoch}';
+      final db = await VelxoWebDatabase.open(root: root);
+      final users = await db.collection('users');
+      final follows = await db.collection('follows');
+      await follows.createReference(1, 'users', onDelete: OnDelete.cascade);
+      await follows.createReference(2, 'users', onDelete: OnDelete.cascade);
+
+      await users.put(key('u2'), doc('two'));
+      await follows.put(
+        key('f1'),
+        (DocBuilder(schemaId: 3)
+              ..putString(1, 'u1')
+              ..putString(2, 'u2'))
+            .finish(),
+      );
+      await users.put(key('u1'), doc('one'));
+      await users.delete(key('u1'));
+      expect(await follows.get(key('f1')), isNull);
+      expect(await users.get(key('u2')), isNotNull);
+
+      final messages = await db.collection('messages');
+      await messages.createReference(2, 'users');
+      await expectLater(
+        db.writeTxn((tx) async {
+          await tx.put(messages, key('m1'), indexedDoc('hello', 'u2'));
+          await tx.delete(users, key('u2'));
+        }),
+        throwsA(isA<VelxoConstraintException>()),
+      );
+      expect(await users.get(key('u2')), isNotNull);
+      expect(await messages.get(key('m1')), isNull);
+      await db.close();
+    },
+  );
+
+  test(
+    'web writeTxn rolls back and rejects collection writes inside it',
+    () async {
+      final root = 'velxodb-txroll-${DateTime.now().microsecondsSinceEpoch}';
+      final db = await VelxoWebDatabase.open(root: root);
+      final items = await db.collection('items');
+
+      await expectLater(
+        db.writeTxn((tx) async {
+          await tx.put(items, key('a'), doc('alpha'));
+          await tx.put(items, key('b'), doc('beta'));
+          throw StateError('abort');
+        }),
+        throwsA(isA<StateError>()),
+      );
+      expect(await items.get(key('a')), isNull);
+      expect(await items.get(key('b')), isNull);
+
+      await expectLater(
+        db.writeTxn((tx) async {
+          await items.put(key('c'), doc('gamma'));
+        }),
+        throwsA(isA<VelxoConflictException>()),
+      );
+      expect(await items.get(key('c')), isNull);
+      await db.close();
+    },
+  );
+
+  test(
+    'a rejected web put keeps the previous document and its index',
+    () async {
+      final root = 'velxodb-refkeep-${DateTime.now().microsecondsSinceEpoch}';
+      final db = await VelxoWebDatabase.open(root: root);
+      final users = await db.collection('users');
+      final messages = await db.collection('messages');
+      await messages.createIndex(2, VxsType.string);
+      await messages.createReference(2, 'users');
+      await users.put(key('u1'), doc('user'));
+      await messages.put(key('m1'), indexedDoc('hello', 'u1'));
+      messages.enforceReferences = true;
+
+      await expectLater(
+        messages.put(key('m1'), indexedDoc('changed', 'ghost')),
+        throwsA(isA<VelxoConstraintException>()),
+      );
+      expect(textOf(await messages.get(key('m1'))), 'hello');
+      expect((await messages.lookupByIndex(2, 'u1')).single.key, key('m1'));
+      expect(await messages.lookupByIndex(2, 'ghost'), isEmpty);
+      await db.close();
+    },
+  );
+
+  test('web structural operations are refused inside writeTxn', () async {
+    final root = 'velxodb-txstruct-${DateTime.now().microsecondsSinceEpoch}';
+    final db = await VelxoWebDatabase.open(root: root);
+    final items = await db.collection('items');
+    await expectLater(
+      db.writeTxn((tx) async {
+        await items.createIndex(2, VxsType.string);
+      }),
+      throwsA(isA<VelxoConflictException>()),
+    );
+    // The index must not exist: the structural operation was refused before it
+    // touched the catalog.
+    await expectLater(
+      items.lookupByIndex(2, 'x'),
+      throwsA(isA<VelxoNotFoundException>()),
+    );
+    await db.close();
+  });
+
+  test('a second web database for the same root is refused', () async {
+    final root = 'velxodb-lock-${DateTime.now().microsecondsSinceEpoch}';
+    final db = await VelxoWebDatabase.open(root: root);
+    await expectLater(
+      VelxoWebDatabase.open(root: root),
+      throwsA(isA<VelxoLockedException>()),
+    );
+    await db.close();
+    // Closing releases the origin-wide lock; the same root opens again.
+    final reopened = await VelxoWebDatabase.open(root: root);
+    await reopened.close();
   });
 
   test('web full-text search maintains postings', () async {

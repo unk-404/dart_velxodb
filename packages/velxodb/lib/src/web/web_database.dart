@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -11,40 +12,124 @@ import '../query/index.dart';
 import '../query/reference.dart';
 import '../serde/builder.dart';
 import '../serde/schema.dart';
+import '../serde/string_view.dart';
 import '../serde/view.dart';
 import '../storage/io/opfs_store.dart';
+import '../storage/io/opfs_write_lock.dart';
 import '../storage/object_engine.dart';
 import '../storage/wal.dart';
+import '../version.dart';
 
 /// One document returned by [WebCollection.scan] and index lookups.
 typedef WebEntry = ({Uint8List key, Bytes value});
 
 /// Async Web database over OPFS.
 ///
-/// Collections, document CRUD, ordered scans, key-cursor pages and secondary
-/// indexes (equality and range) with the same document encoding, collection
-/// prefixes and index key layout as the VM. Transactions, references, graph
-/// and full-text are not in this layer yet.
+/// Collections, document CRUD, ordered scans, key-cursor pages, secondary
+/// indexes (equality and range), write transactions, reference bindings,
+/// graph edges and full-text search, with the same document encoding,
+/// collection prefixes and index key layout as the VM.
+///
+/// Every mutation — a document plus its index entries, text postings and
+/// reference checks — is one WAL object, so it either lands whole or not at
+/// all. The database root also carries the same `FORMAT` stamp as the VM, so a
+/// major upgrade is refused here too.
 final class VelxoWebDatabase {
   VelxoWebDatabase._(this._store, this._engine, this._catalog);
 
   /// Opens (or creates) a database under the OPFS logical [root].
+  ///
+  /// The `prefix` must be unique per database inside [root]; it is the object
+  /// name prefix (`db/` by default).
   static Future<VelxoWebDatabase> open({
     String root = 'velxodb',
     String prefix = 'db/',
+    bool repairIndexes = true,
   }) async {
-    final store = await OpfsObjectStore.open(root: root);
-    final engine = ObjectStoreEngine(store: store, prefix: prefix);
-    await engine.open();
-    final raw = await store.get('${prefix}CATALOG');
-    final catalog = raw == null ? Catalog.empty() : Catalog.decode(raw);
-    return VelxoWebDatabase._(store, engine, catalog);
+    // One tab per database: OPFS has no cross-tab exclusion, so the Web Lock is
+    // what keeps two tabs from interleaving writes into one WAL.
+    final lock = await OpfsWriteLock.acquire('velxodb:$root:$prefix');
+    OpfsObjectStore? store;
+    try {
+      store = await OpfsObjectStore.open(root: root);
+      await _checkFormat(store, prefix);
+      final engine = ObjectStoreEngine(store: store, prefix: prefix);
+      await engine.open();
+      final raw = await store.get('${prefix}CATALOG');
+      final catalog = raw == null ? Catalog.empty() : Catalog.decode(raw);
+      final database = VelxoWebDatabase._(store, engine, catalog).._lock = lock;
+      if (repairIndexes) await database._finishPendingIndexes();
+      return database;
+    } on Object {
+      await store?.close();
+      await lock.release();
+      rethrow;
+    }
+  }
+
+  static String _formatKey(String prefix) => '${prefix}FORMAT';
+
+  /// Enforces the same A/B/C policy as the local engine, using an object as the
+  /// database root marker.
+  static Future<void> _checkFormat(OpfsObjectStore store, String prefix) async {
+    final key = _formatKey(prefix);
+    final raw = await store.get(key);
+    if (raw == null) {
+      // A database created before stamping: treat it as 1.0 and stamp it.
+      await store.put(key, encodeFormatStamp());
+      return;
+    }
+    final stamp = decodeFormatStamp(raw);
+    if (stamp.major > formatMajor) {
+      throw VelxoIncompatibleException(
+        'database format ${stamp.major}.${stamp.minor} is newer than this '
+        'build ($formatMajor.$formatMinor)',
+      );
+    }
+    if (stamp.major < formatMajor) {
+      throw const VelxoUpgradeRequiredException(
+        'database format is older than this build; there is no object-store '
+        'upgrade path yet',
+      );
+    }
+    if (stamp.minor < formatMinor) {
+      await store.put(key, encodeFormatStamp());
+    }
   }
 
   final OpfsObjectStore _store;
   final ObjectStoreEngine _engine;
   Catalog _catalog;
   final Map<String, WebCollection> _collections = <String, WebCollection>{};
+  WebGraph? _graph;
+  OpfsWriteLock? _lock;
+
+  /// Transaction nesting depth, used to make `collection.put` inside a
+  /// `writeTxn` body fail loudly instead of committing behind the caller's back.
+  int _txDepth = 0;
+
+  /// Serializes read-modify-write mutations. The engine is single-writer; an
+  /// async `put` must not interleave with another `put` or a backfill between
+  /// its read and its commit, or index postings would be lost or duplicated.
+  Future<void> _writeTail = Future<void>.value();
+
+  Future<T> _exclusive<T>(Future<T> Function() body) async {
+    if (_txDepth > 0) {
+      throw const VelxoConflictException(
+        'a transaction is running; finish it before creating or repairing '
+        'indexes or references',
+      );
+    }
+    final previous = _writeTail;
+    final done = Completer<void>();
+    _writeTail = done.future;
+    await previous;
+    try {
+      return await body();
+    } finally {
+      done.complete();
+    }
+  }
 
   /// Opens (creating when needed) a collection.
   Future<WebCollection> collection(String name) async {
@@ -79,8 +164,6 @@ final class VelxoWebDatabase {
   /// Async graph over the same objects.
   WebGraph get graph => _graph ??= WebGraph._(this, _engine);
 
-  WebGraph? _graph;
-
   /// Flushes the memtable into an object-store segment.
   Future<void> flush() async {
     await _engine.flush();
@@ -88,23 +171,63 @@ final class VelxoWebDatabase {
 
   /// Runs [body] and commits every buffered put/delete as one WAL object.
   ///
-  /// If [body] throws, nothing is written. Index maintenance is part of the
-  /// same batch. Reads inside [body] see the transaction's own writes.
-  Future<T> writeTxn<T>(Future<T> Function(WebTransaction transaction) body) async {
-    final transaction = WebTransaction._(_engine);
-    final result = await body(transaction);
-    await transaction.commit();
-    return result;
+  /// If [body] throws, nothing is written. `transaction.get` sees the pending
+  /// writes; collection-level reads (scan, page, index lookup) observe the
+  /// committed state. Reference checks and cascades run against the
+  /// transaction's view. Call `transaction.put` / `transaction.delete` inside
+  /// [body]; calling `collection.put` there throws, because it would commit
+  /// immediately and could not be rolled back.
+  Future<T> writeTxn<T>(
+    Future<T> Function(WebTransaction transaction) body,
+  ) async {
+    if (_txDepth > 0) {
+      throw const VelxoConflictException(
+        'nested writeTxn is not supported; use the open transaction',
+      );
+    }
+    return _exclusive(() async {
+      _txDepth++;
+      try {
+        final transaction = WebTransaction._(this, _engine);
+        final result = await body(transaction);
+        await transaction.commit();
+        return result;
+      } finally {
+        _txDepth--;
+      }
+    });
   }
 
   /// Alias for [writeTxn].
-  Future<T> transaction<T>(Future<T> Function(WebTransaction transaction) body) =>
-      writeTxn(body);
+  Future<T> transaction<T>(
+    Future<T> Function(WebTransaction transaction) body,
+  ) => writeTxn(body);
 
-  /// Flushes and closes the engine and the OPFS store.
+  /// Finishes backfills that a crash interrupted.
+  Future<void> _finishPendingIndexes() async {
+    for (final entry in List<CollectionEntry>.of(_catalog.entries)) {
+      final pending =
+          _catalog.indexes.any(
+            (index) => index.collectionId == entry.id && !index.ready,
+          ) ||
+          _catalog.textIndexes.any(
+            (index) => index.collectionId == entry.id && !index.ready,
+          );
+      if (!pending) continue;
+      final collection = await this.collection(entry.name);
+      await collection._repairPendingIndexes();
+    }
+  }
+
+  /// Flushes and closes the engine, the OPFS store and the cross-tab lock.
   Future<void> close({bool flush = true}) async {
-    await _engine.close(flush: flush);
-    await _store.close();
+    try {
+      await _engine.close(flush: flush);
+      await _store.close();
+    } finally {
+      await _lock?.release();
+      _lock = null;
+    }
   }
 }
 
@@ -118,21 +241,28 @@ final class WebCollection {
   final ObjectStoreEngine _engine;
   final int _id;
 
+  /// Whether writes verify that referenced documents exist.
+  ///
+  /// Off by default, matching the VM: a bulk import may write referrers before
+  /// targets, and a cycle cannot be created in one pass when every insert is
+  /// checked. Deletion policies are always enforced.
+  bool enforceReferences = false;
+
   /// Stable collection id.
   int get id => _id;
 
-  Uint8List _key(Uint8List key) {
+  Uint8List _key(Uint8List key) => _compose(_id, key);
+
+  Uint8List get _prefix =>
+      Uint8List.fromList(<int>[(_id >> 8) & 0xFF, _id & 0xFF]);
+
+  static Uint8List _compose(int collectionId, Uint8List key) {
     final out = Uint8List(2 + key.length);
-    out[0] = (_id >> 8) & 0xFF;
-    out[1] = _id & 0xFF;
+    out[0] = (collectionId >> 8) & 0xFF;
+    out[1] = collectionId & 0xFF;
     out.setRange(2, out.length, key);
     return out;
   }
-
-  Uint8List get _prefix => Uint8List.fromList(<int>[
-    (_id >> 8) & 0xFF,
-    _id & 0xFF,
-  ]);
 
   static Uint8List? _upper(Uint8List prefix) {
     final out = Uint8List.fromList(prefix);
@@ -148,42 +278,58 @@ final class WebCollection {
   /// Reads one document.
   Future<Bytes?> get(Uint8List key) => _engine.get(_key(key));
 
-  /// Inserts or replaces one document, maintaining every index.
+  /// Inserts or replaces one document.
+  ///
+  /// The document, its index entries and its text postings are written as one
+  /// WAL object. A missing reference rejects the write when
+  /// [enforceReferences] is enabled.
   Future<void> put(Uint8List key, Bytes document) async {
-    final old = await get(key);
-    if (old != null) {
-      await _removeIndexes(key, old);
-      await _removeText(key, old);
+    if (_db._txDepth > 0) {
+      throw const VelxoConflictException(
+        'inside writeTxn use transaction.put; collection.put would commit '
+        'outside the transaction',
+      );
     }
-    await _validateReferences(document);
-    await _engine.put(_key(key), document);
-    await _addIndexes(key, document);
-    await _addText(key, document);
+    await _db.writeTxn((transaction) => transaction.put(this, key, document));
   }
 
-  /// Deletes one document, checking/cascading references first.
+  /// Deletes one document, applying reference policies.
+  ///
+  /// `restrict` rejects the whole delete, `cascade` deletes every referrer in
+  /// the same WAL object, and a reference cycle is broken by a visited set.
   Future<void> delete(Uint8List key) async {
-    final old = await get(key);
-    if (old != null) {
-      await _handleReferrers(key);
-      await _removeIndexes(key, old);
-      await _removeText(key, old);
+    if (_db._txDepth > 0) {
+      throw const VelxoConflictException(
+        'inside writeTxn use transaction.delete; collection.delete would '
+        'commit outside the transaction',
+      );
     }
-    await _engine.delete(_key(key));
+    await _db.writeTxn((transaction) => transaction.delete(this, key));
   }
 
   /// Creates (and backfills) a full-text index on [fieldId].
+  ///
+  /// The catalog marks the index as not ready while the backfill runs, so an
+  /// interrupted build is repaired on the next open instead of answering
+  /// queries with a partial index. Backfills and writes share one lock, so a
+  /// concurrent put cannot resurrect a stale posting.
   Future<void> createTextIndex(
     int fieldId, {
     Tokenizer tokenizer = const WordTokenizer(),
-  }) async {
+  }) => _db._exclusive(() => _createTextIndex(fieldId, tokenizer));
+
+  Future<void> _createTextIndex(int fieldId, Tokenizer tokenizer) async {
     if (_db._catalog.textIndexFor(_id, fieldId) != null) return;
-    _db._catalog = _db._catalog.withTextIndex(_id, fieldId, tokenizer);
+    _db._catalog = _db._catalog.withTextIndex(
+      _id,
+      fieldId,
+      tokenizer,
+      ready: false,
+    );
     await _db._saveCatalog();
-    final definition = _db._catalog.textIndexFor(_id, fieldId)!;
-    for (final entry in await scan()) {
-      await _addText(entry.key, entry.value, definition: definition);
-    }
+    await _backfillText(fieldId);
+    _db._catalog = _db._catalog.withTextIndexReady(_id, fieldId, true);
+    await _db._saveCatalog();
   }
 
   /// Searches a full-text index.
@@ -196,6 +342,11 @@ final class WebCollection {
     final definition = _db._catalog.textIndexFor(_id, fieldId);
     if (definition == null) {
       throw VelxoNotFoundException('no text index on field $fieldId');
+    }
+    if (!definition.ready) {
+      throw VelxoConflictException(
+        'text index on field $fieldId is still being built',
+      );
     }
     final terms = definition.tokenize(query).toSet();
     Set<String>? candidates;
@@ -231,35 +382,17 @@ final class WebCollection {
       out.add((key: primaryKey, value: document));
       if (limit != null && out.length >= limit) break;
     }
+    out.sort(
+      (a, b) => StringView.compareRanges(
+        a.key,
+        0,
+        a.key.length,
+        b.key,
+        0,
+        b.key.length,
+      ),
+    );
     return out;
-  }
-
-  Future<void> _addText(
-    Uint8List key,
-    Bytes document, {
-    TextIndexDefinition? definition,
-  }) async {
-    final view = DocView.parse(document.asUint8List());
-    for (final textIndex in definition == null
-        ? _db._catalog.textIndexes
-        : <TextIndexDefinition>[definition]) {
-      if (textIndex.collectionId != _id) continue;
-      final text = view.getString(textIndex.fieldId) ?? '';
-      for (final term in textIndex.tokenize(text).toSet()) {
-        await _engine.put(textIndex.entryKey(term, key), _empty);
-      }
-    }
-  }
-
-  Future<void> _removeText(Uint8List key, Bytes document) async {
-    final view = DocView.parse(document.asUint8List());
-    for (final textIndex in _db._catalog.textIndexes) {
-      if (textIndex.collectionId != _id) continue;
-      final text = view.getString(textIndex.fieldId) ?? '';
-      for (final term in textIndex.tokenize(text).toSet()) {
-        await _engine.delete(textIndex.entryKey(term, key));
-      }
-    }
   }
 
   /// Binds [fieldId] to [targetName] and indexes the field.
@@ -267,77 +400,18 @@ final class WebCollection {
     int fieldId,
     String targetName, {
     OnDelete onDelete = OnDelete.restrict,
-  }) async {
+  }) => _db._exclusive(() async {
     final targetId = _db._catalog.idOf(targetName);
     if (targetId == null) {
       throw VelxoNotFoundException(
         'target collection "$targetName" does not exist',
       );
     }
-    _db._catalog = _db._catalog.withReference(
-      _id,
-      fieldId,
-      targetId,
-      onDelete,
-    );
+    await _createIndex(fieldId, VxsType.string);
+    _db._catalog = _db._catalog.withReference(_id, fieldId, targetId, onDelete);
     await _db._saveCatalog();
-    await createIndex(fieldId, VxsType.string);
     return _db._catalog.referenceFor(_id, fieldId)!;
-  }
-
-  Future<void> _validateReferences(Bytes document) async {
-    final view = DocView.parse(document.asUint8List());
-    for (final reference in _db._catalog.references) {
-      if (reference.sourceCollectionId != _id) continue;
-      final value = view.getString(reference.fieldId);
-      if (value == null) continue;
-      final targetKey = Uint8List.fromList(utf8.encode(value));
-      final target = await _engine.get(
-        WebCollection._compose(reference.targetCollectionId, targetKey),
-      );
-      if (target == null) {
-        throw StateError(
-          'missing referenced document "$value" in collection '
-          '${reference.targetCollectionId} (field ${reference.fieldId})',
-        );
-      }
-    }
-  }
-
-  Future<void> _handleReferrers(Uint8List key) async {
-    final targetKey = utf8.decode(key);
-    for (final reference in _db._catalog.references) {
-      if (reference.targetCollectionId != _id) continue;
-      final source = _db._collectionById(reference.sourceCollectionId);
-      if (source == null) continue;
-      final referrers = await source.lookupByIndex(
-        reference.fieldId,
-        targetKey,
-      );
-      if (referrers.isEmpty) continue;
-      switch (reference.onDelete) {
-        case OnDelete.restrict:
-          throw StateError(
-            'cannot delete document: ${referrers.length} document(s) still '
-            'reference it through field ${reference.fieldId}',
-          );
-        case OnDelete.cascade:
-          for (final entry in referrers) {
-            await source.delete(entry.key);
-          }
-        case OnDelete.setNull:
-          throw UnsupportedError('OnDelete.setNull is not implemented');
-      }
-    }
-  }
-
-  static Uint8List _compose(int collectionId, Uint8List key) {
-    final out = Uint8List(2 + key.length);
-    out[0] = (collectionId >> 8) & 0xFF;
-    out[1] = collectionId & 0xFF;
-    out.setRange(2, out.length, key);
-    return out;
-  }
+  });
 
   /// Scans the collection in key order.
   Future<List<WebEntry>> scan({
@@ -382,26 +456,101 @@ final class WebCollection {
   }
 
   /// Creates (and backfills) an index on [fieldId].
-  Future<void> createIndex(int fieldId, VxsType type) async {
-    if (_db._catalog.indexFor(_id, fieldId) != null) return;
-    _db._catalog = _db._catalog.withIndex(_id, fieldId, type);
-    await _db._saveCatalog();
-    final definition = _db._catalog.indexFor(_id, fieldId)!;
-    for (final entry in await scan()) {
-      final value = definition.readValue(DocView.parse(entry.value.asUint8List()));
-      if (value != null) {
-        await _engine.put(
-          definition.entryKey(value, entry.key),
-          _empty,
+  Future<void> createIndex(int fieldId, VxsType type) =>
+      _db._exclusive(() => _createIndex(fieldId, type));
+
+  Future<void> _createIndex(int fieldId, VxsType type) async {
+    final existing = _db._catalog.indexFor(_id, fieldId);
+    if (existing != null) {
+      if (existing.type != type) {
+        throw ArgumentError(
+          'field $fieldId is already indexed as ${existing.type.name}',
         );
       }
+      if (!existing.ready) {
+        await _backfillIndex(fieldId);
+        _db._catalog = _db._catalog.withIndexReady(_id, fieldId, true);
+        await _db._saveCatalog();
+      }
+      return;
     }
+    _db._catalog = _db._catalog.withIndex(_id, fieldId, type, ready: false);
+    await _db._saveCatalog();
+    await _backfillIndex(fieldId);
+    _db._catalog = _db._catalog.withIndexReady(_id, fieldId, true);
+    await _db._saveCatalog();
+  }
+
+  Future<void> _repairPendingIndexes() async {
+    for (final definition in List<IndexDefinition>.of(_db._catalog.indexes)) {
+      if (definition.collectionId != _id || definition.ready) continue;
+      await _backfillIndex(definition.fieldId);
+      _db._catalog = _db._catalog.withIndexReady(_id, definition.fieldId, true);
+      await _db._saveCatalog();
+    }
+    for (final definition in List<TextIndexDefinition>.of(
+      _db._catalog.textIndexes,
+    )) {
+      if (definition.collectionId != _id || definition.ready) continue;
+      await _backfillText(definition.fieldId);
+      _db._catalog = _db._catalog.withTextIndexReady(
+        _id,
+        definition.fieldId,
+        true,
+      );
+      await _db._saveCatalog();
+    }
+  }
+
+  Future<void> _backfillIndex(int fieldId) async {
+    final definition = _db._catalog.indexFor(_id, fieldId);
+    if (definition == null) return;
+    final ops = <WalOp>[];
+    for (final entry in await scan()) {
+      final value = definition.readValue(
+        DocView.parse(entry.value.asUint8List()),
+      );
+      if (value == null) continue;
+      ops.add(
+        WalOp.put(definition.entryKey(value, entry.key), _empty.asUint8List()),
+      );
+      if (ops.length >= 1000) {
+        await _engine.applyBatch(ops);
+        ops.clear();
+      }
+    }
+    if (ops.isNotEmpty) await _engine.applyBatch(ops);
+  }
+
+  Future<void> _backfillText(int fieldId) async {
+    final definition = _db._catalog.textIndexFor(_id, fieldId);
+    if (definition == null) return;
+    final ops = <WalOp>[];
+    for (final entry in await scan()) {
+      final text =
+          DocView.parse(entry.value.asUint8List()).getString(fieldId) ?? '';
+      for (final term in definition.tokenize(text).toSet()) {
+        ops.add(
+          WalOp.put(definition.entryKey(term, entry.key), _empty.asUint8List()),
+        );
+        if (ops.length >= 1000) {
+          await _engine.applyBatch(ops);
+          ops.clear();
+        }
+      }
+    }
+    if (ops.isNotEmpty) await _engine.applyBatch(ops);
   }
 
   IndexDefinition _index(int fieldId) {
     final definition = _db._catalog.indexFor(_id, fieldId);
     if (definition == null) {
       throw VelxoNotFoundException('no index on field $fieldId');
+    }
+    if (!definition.ready) {
+      throw VelxoConflictException(
+        'index on field $fieldId is still being built',
+      );
     }
     return definition;
   }
@@ -410,15 +559,10 @@ final class WebCollection {
   Future<List<WebEntry>> lookupByIndex(int fieldId, Object value) async {
     final definition = _index(fieldId);
     final prefix = definition.valuePrefix(value);
-    final entries = await _engine.scanRange(
-      start: prefix,
-      end: _upper(prefix),
-    );
+    final entries = await _engine.scanRange(start: prefix, end: _upper(prefix));
     final out = <WebEntry>[];
     for (final entry in entries) {
-      final primaryKey = Uint8List.fromList(
-        entry.key.sublist(prefix.length),
-      );
+      final primaryKey = Uint8List.fromList(entry.key.sublist(prefix.length));
       final document = await _engine.get(_key(primaryKey));
       if (document == null) continue;
       final actual = definition.readValue(
@@ -460,9 +604,7 @@ final class WebCollection {
       );
       final document = await _engine.get(_key(primaryKey));
       if (document == null) continue;
-      final value = definition.readValue(
-        DocView.parse(document.asUint8List()),
-      );
+      final value = definition.readValue(DocView.parse(document.asUint8List()));
       if (value == null) continue;
       if (from != null) {
         final comparison = definition.compareValues(value, from);
@@ -476,26 +618,6 @@ final class WebCollection {
       if (limit != null && out.length >= limit) break;
     }
     return out;
-  }
-
-  Future<void> _addIndexes(Uint8List key, Bytes document) async {
-    final view = DocView.parse(document.asUint8List());
-    for (final definition in _db._catalog.indexes) {
-      if (definition.collectionId != _id) continue;
-      final value = definition.readValue(view);
-      if (value == null) continue;
-      await _engine.put(definition.entryKey(value, key), _empty);
-    }
-  }
-
-  Future<void> _removeIndexes(Uint8List key, Bytes document) async {
-    final view = DocView.parse(document.asUint8List());
-    for (final definition in _db._catalog.indexes) {
-      if (definition.collectionId != _id) continue;
-      final value = definition.readValue(view);
-      if (value == null) continue;
-      await _engine.delete(definition.entryKey(value, key));
-    }
   }
 }
 
@@ -563,10 +685,9 @@ final class WebGraph {
     Set<String>? relations,
     EdgeDirection direction = EdgeDirection.outbound,
   }) async {
-    final names = relations ??
-        <String>[
-          for (final relation in _db._catalog.relations) relation.name,
-        ];
+    final names =
+        relations ??
+        <String>[for (final relation in _db._catalog.relations) relation.name];
     final visited = <NodeRef>{start};
     final levels = <List<NodeRef>>[
       <NodeRef>[start],
@@ -578,8 +699,9 @@ final class WebGraph {
         for (final name in names) {
           final edges = await _scan(name, node, direction);
           for (final edge in edges) {
-            final neighbour =
-                direction == EdgeDirection.outbound ? edge.to : edge.from;
+            final neighbour = direction == EdgeDirection.outbound
+                ? edge.to
+                : edge.from;
             if (visited.add(neighbour)) next.add(neighbour);
           }
         }
@@ -590,7 +712,8 @@ final class WebGraph {
     }
     return GraphWalk(
       levels: levels,
-      truncated: levels.length - 1 == maxDepth && frontier.isNotEmpty,
+      truncated:
+          maxDepth > 0 && levels.length - 1 == maxDepth && frontier.isNotEmpty,
     );
   }
 
@@ -609,10 +732,7 @@ final class WebGraph {
     prefix[3] = (nodeBytes.length >> 8) & 0xFF;
     prefix[4] = nodeBytes.length & 0xFF;
     prefix.setRange(5, prefix.length, nodeBytes);
-    final entries = await _engine.scanRange(
-      start: prefix,
-      end: _upper(prefix),
-    );
+    final entries = await _engine.scanRange(start: prefix, end: _upper(prefix));
     final edges = <GraphEdge>[];
     for (final entry in entries) {
       final other = NodeRef.decode(
@@ -658,15 +778,22 @@ Uint8List? _upper(Uint8List prefix) {
   }
   return null;
 }
+
+/// Buffered writes over an object store.
 ///
 /// Document and index mutations share one WAL object, so the commit is atomic
-/// at the object store level. Reads see the transaction's own writes.
+/// at the object-store level. Reads see the transaction's own writes; reference
+/// checks and cascades use the same view.
 final class WebTransaction {
-  WebTransaction._(this._engine) : _ops = <String, WalOp>{};
+  WebTransaction._(this._db, this._engine) : _ops = <String, WalOp>{};
 
+  final VelxoWebDatabase _db;
   final ObjectStoreEngine _engine;
   final Map<String, WalOp> _ops;
   bool _committed = false;
+
+  /// Whether anything is buffered.
+  bool get isEmpty => _ops.isEmpty;
 
   /// Reads [key] from [collection], including buffered writes.
   Future<Bytes?> get(WebCollection collection, Uint8List key) async {
@@ -680,33 +807,57 @@ final class WebTransaction {
     return _engine.get(full);
   }
 
-  /// Buffers a put and its index maintenance.
+  /// Buffers a put, its index/text maintenance and the reference checks.
   Future<void> put(
     WebCollection collection,
     Uint8List key,
     Bytes document,
   ) async {
+    if (collection.enforceReferences) {
+      await _validateReferences(collection, document);
+    }
     final old = await get(collection, key);
     if (old != null) {
-      _removeIndexes(collection, key, old);
-      _removeText(collection, key, old);
+      _collectIndexOps(collection, key, old, null);
+      _collectTextOps(collection, key, old, null);
     }
     final full = collection._key(key);
     _ops[String.fromCharCodes(full)] = WalOp.put(
       full,
       Uint8List.fromList(document.asUint8List()),
     );
-    _addIndexes(collection, key, document);
-    _addText(collection, key, document);
+    _collectIndexOps(collection, key, null, document);
+    _collectTextOps(collection, key, null, document);
   }
 
-  /// Buffers a delete and its index maintenance.
-  Future<void> delete(WebCollection collection, Uint8List key) async {
-    final old = await get(collection, key);
-    if (old != null) {
-      _removeIndexes(collection, key, old);
-      _removeText(collection, key, old);
+  /// Buffers a delete and applies `restrict` / `cascade` reference policies.
+  ///
+  /// A cascade uses a visited set and a depth limit, so a reference cycle ends.
+  Future<void> delete(WebCollection collection, Uint8List key) =>
+      _delete(collection, key, <String>{}, 0);
+
+  Future<void> _delete(
+    WebCollection collection,
+    Uint8List key,
+    Set<String> visited,
+    int depth,
+  ) async {
+    if (depth > 32) {
+      throw VelxoConflictException(
+        'reference cascade exceeded depth 32 while deleting '
+        '${String.fromCharCodes(key)}',
+      );
     }
+    if (!visited.add('${collection.id}:${String.fromCharCodes(key)}')) return;
+    final old = await get(collection, key);
+    if (old == null) {
+      final full = collection._key(key);
+      _ops[String.fromCharCodes(full)] = WalOp.delete(full);
+      return;
+    }
+    await _handleReferrers(collection, key, visited, depth);
+    _collectIndexOps(collection, key, old, null);
+    _collectTextOps(collection, key, old, null);
     final full = collection._key(key);
     _ops[String.fromCharCodes(full)] = WalOp.delete(full);
   }
@@ -715,45 +866,140 @@ final class WebTransaction {
   Future<void> commit() async {
     if (_committed) return;
     _committed = true;
+    if (_ops.isEmpty) return;
     await _engine.applyBatch(_ops.values.toList(growable: false));
   }
 
-  void _addIndexes(WebCollection collection, Uint8List key, Bytes document) {
+  Future<void> _validateReferences(
+    WebCollection collection,
+    Bytes document,
+  ) async {
     final view = DocView.parse(document.asUint8List());
-    for (final definition in collection._db._catalog.indexes) {
-      if (definition.collectionId != collection._id) continue;
-      final value = definition.readValue(view);
+    for (final reference in _db._catalog.references) {
+      if (reference.sourceCollectionId != collection.id) continue;
+      final value = view.getString(reference.fieldId);
       if (value == null) continue;
-      _putPosting(definition, value, key);
+      final targetKey = Uint8List.fromList(utf8.encode(value));
+      final composed = WebCollection._compose(
+        reference.targetCollectionId,
+        targetKey,
+      );
+      final pending = _ops[String.fromCharCodes(composed)];
+      final exists = pending != null
+          ? pending.kind == WalOpKind.put
+          : await _engine.get(composed) != null;
+      if (!exists) {
+        throw VelxoConstraintException(
+          'missing referenced document "$value" in collection '
+          '${reference.targetCollectionId} (field ${reference.fieldId})',
+        );
+      }
     }
   }
 
-  void _removeIndexes(WebCollection collection, Uint8List key, Bytes document) {
-    final view = DocView.parse(document.asUint8List());
-    for (final definition in collection._db._catalog.indexes) {
-      if (definition.collectionId != collection._id) continue;
-      final value = definition.readValue(view);
-      if (value == null) continue;
-      final posting = definition.entryKey(value, key);
-      _ops[String.fromCharCodes(posting)] = WalOp.delete(posting);
+  Future<void> _handleReferrers(
+    WebCollection target,
+    Uint8List key,
+    Set<String> visited,
+    int depth,
+  ) async {
+    final String targetKey;
+    try {
+      targetKey = utf8.decode(key);
+    } on FormatException {
+      // A binary primary key can never be the target of a string reference.
+      return;
+    }
+    for (final reference in _db._catalog.references) {
+      if (reference.targetCollectionId != target.id) continue;
+      final source = _db._collectionById(reference.sourceCollectionId);
+      if (source == null) continue;
+      final referrers = await _referrers(source, reference.fieldId, targetKey);
+      final live = <WebEntry>[];
+      for (final entry in referrers) {
+        // A referrer already buffered as deleted in this transaction is gone.
+        if (await get(source, entry.key) == null) continue;
+        live.add(entry);
+      }
+      if (live.isEmpty) continue;
+      switch (reference.onDelete) {
+        case OnDelete.restrict:
+          throw VelxoConstraintException(
+            'cannot delete document: ${live.length} document(s) still '
+            'reference it through field ${reference.fieldId}',
+          );
+        case OnDelete.cascade:
+          for (final entry in live) {
+            await _delete(source, entry.key, visited, depth + 1);
+          }
+        case OnDelete.setNull:
+          throw UnsupportedError('OnDelete.setNull is not implemented');
+      }
     }
   }
 
-  void _putPosting(IndexDefinition definition, Object value, Uint8List key) {
-    final posting = definition.entryKey(value, key);
-    _ops[String.fromCharCodes(posting)] = WalOp.put(
-      posting,
-      WebCollection._empty.asUint8List(),
-    );
+  /// Referrers of [value], including postings this transaction has buffered.
+  ///
+  /// The committed index cannot see a referrer written earlier in the same
+  /// block, so a `restrict` would pass and a `cascade` would miss it.
+  Future<List<WebEntry>> _referrers(
+    WebCollection source,
+    int fieldId,
+    Object value,
+  ) async {
+    final definition = _db._catalog.indexFor(source.id, fieldId);
+    if (definition == null) return const <WebEntry>[];
+    final merged = <String, WebEntry>{
+      for (final entry in await source.lookupByIndex(fieldId, value))
+        String.fromCharCodes(entry.key): entry,
+    };
+    final prefix = definition.valuePrefix(value);
+    for (final op in _ops.values) {
+      final posting = op.key;
+      if (posting.length < prefix.length) continue;
+      if (!_startsWith(posting, prefix)) continue;
+      final primaryKey = Uint8List.sublistView(posting, prefix.length);
+      final id = String.fromCharCodes(primaryKey);
+      if (op.kind == WalOpKind.delete) {
+        merged.remove(id);
+      } else {
+        merged[id] = (
+          key: primaryKey,
+          value: Bytes.view(op.value!, 0, op.value!.length),
+        );
+      }
+    }
+    return merged.values.toList();
   }
 
-  void _addText(WebCollection collection, Uint8List key, Bytes document) {
-    final view = DocView.parse(document.asUint8List());
-    for (final textIndex in collection._db._catalog.textIndexes) {
-      if (textIndex.collectionId != collection._id) continue;
-      final text = view.getString(textIndex.fieldId) ?? '';
-      for (final term in textIndex.tokenize(text).toSet()) {
-        final posting = textIndex.entryKey(term, key);
+  static bool _startsWith(Uint8List bytes, Uint8List prefix) {
+    if (bytes.length < prefix.length) return false;
+    for (var i = 0; i < prefix.length; i++) {
+      if (bytes[i] != prefix[i]) return false;
+    }
+    return true;
+  }
+
+  void _collectIndexOps(
+    WebCollection collection,
+    Uint8List key,
+    Bytes? oldDocument,
+    Bytes? newDocument,
+  ) {
+    for (final definition in _db._catalog.indexes) {
+      if (definition.collectionId != collection.id) continue;
+      final oldValue = oldDocument == null
+          ? null
+          : definition.readValue(DocView.parse(oldDocument.asUint8List()));
+      final newValue = newDocument == null
+          ? null
+          : definition.readValue(DocView.parse(newDocument.asUint8List()));
+      if (oldValue != null && oldValue != newValue) {
+        final posting = definition.entryKey(oldValue, key);
+        _ops[String.fromCharCodes(posting)] = WalOp.delete(posting);
+      }
+      if (newValue != null && oldValue != newValue) {
+        final posting = definition.entryKey(newValue, key);
         _ops[String.fromCharCodes(posting)] = WalOp.put(
           posting,
           WebCollection._empty.asUint8List(),
@@ -762,14 +1008,36 @@ final class WebTransaction {
     }
   }
 
-  void _removeText(WebCollection collection, Uint8List key, Bytes document) {
-    final view = DocView.parse(document.asUint8List());
-    for (final textIndex in collection._db._catalog.textIndexes) {
-      if (textIndex.collectionId != collection._id) continue;
-      final text = view.getString(textIndex.fieldId) ?? '';
-      for (final term in textIndex.tokenize(text).toSet()) {
-        final posting = textIndex.entryKey(term, key);
+  void _collectTextOps(
+    WebCollection collection,
+    Uint8List key,
+    Bytes? oldDocument,
+    Bytes? newDocument,
+  ) {
+    for (final definition in _db._catalog.textIndexes) {
+      if (definition.collectionId != collection.id) continue;
+      final oldText = oldDocument == null
+          ? ''
+          : DocView.parse(oldDocument.asUint8List())
+                    .getString(definition.fieldId) ??
+                '';
+      final newText = newDocument == null
+          ? ''
+          : DocView.parse(newDocument.asUint8List())
+                    .getString(definition.fieldId) ??
+                '';
+      final oldTerms = definition.tokenize(oldText).toSet();
+      final newTerms = definition.tokenize(newText).toSet();
+      for (final term in oldTerms.difference(newTerms)) {
+        final posting = definition.entryKey(term, key);
         _ops[String.fromCharCodes(posting)] = WalOp.delete(posting);
+      }
+      for (final term in newTerms.difference(oldTerms)) {
+        final posting = definition.entryKey(term, key);
+        _ops[String.fromCharCodes(posting)] = WalOp.put(
+          posting,
+          WebCollection._empty.asUint8List(),
+        );
       }
     }
   }

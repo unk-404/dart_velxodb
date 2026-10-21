@@ -4,17 +4,17 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/velxodb.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text, int number) => (DocBuilder(schemaId: 1)
-      ..putString(1, text)
-      ..putInt(2, number))
-    .finish();
+Bytes doc(String text, int number) =>
+    (DocBuilder(schemaId: 1)
+          ..putString(1, text)
+          ..putInt(2, number))
+        .finish();
 
 void main() {
   late Directory root;
@@ -83,17 +83,11 @@ void main() {
       collection.createIndex(2, VxsType.int64);
       collection.putSync(k('a'), doc('alpha', 1));
       // Rewrite the document with a different indexed value, bypassing upkeep.
-      db.engine.putSync(
-        collection.composeKey(k('a')),
-        doc('alpha', 2),
-      );
+      db.engine.putSync(collection.composeKey(k('a')), doc('alpha', 2));
 
       final report = db.checkSync(deep: true);
       expect(report.ok, isFalse);
-      expect(
-        report.issues.any((issue) => issue.code == 'stale-index'),
-        isTrue,
-      );
+      expect(report.issues.any((issue) => issue.code == 'stale-index'), isTrue);
     });
 
     test('deep check finds stale text postings', () {

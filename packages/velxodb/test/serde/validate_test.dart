@@ -49,14 +49,18 @@ void main() {
       final issues = view.validate(schema);
       expect(issues.single.fieldId, 1);
       expect(issues.single.message, contains('wire type'));
-      expect(() => view.validateOrThrow(schema), throwsA(isA<VxsFormatException>()));
+      expect(
+        () => view.validateOrThrow(schema),
+        throwsA(isA<VxsFormatException>()),
+      );
     });
 
     test('validates nested documents', () {
-      final inner = (DocBuilder()
-            ..putString(1, 'inner')
-            ..putInt(2, 1))
-          .finish();
+      final inner =
+          (DocBuilder()
+                ..putString(1, 'inner')
+                ..putInt(2, 1))
+              .finish();
       final outer = (DocBuilder()..putDoc(7, inner)).finish();
       expect(DocView.parse(outer.asUint8List()).validate(schema), isEmpty);
 
@@ -101,7 +105,10 @@ void main() {
       final view = DocView.parse(sample().finish().asUint8List());
       final values = view.project(schema, <int>[4]);
       expect(values.single, isA<StringView>());
-      expect(utf8.encode((values.single! as StringView).toString()), isNotEmpty);
+      expect(
+        utf8.encode((values.single! as StringView).toString()),
+        isNotEmpty,
+      );
     });
 
     test('handles an empty request', () {

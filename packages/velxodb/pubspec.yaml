@@ -1,22 +1,25 @@
 name: velxodb
-description: Embedded, pure-Dart document database with zero-copy storage, pluggable object stores and Mongo-style APIs.
-version: 0.1.0
-
-# repository: https://github.com/your-org/dart_velxodb
-# issue_tracker: https://github.com/your-org/dart_velxodb/issues
+description: >-
+  Embedded pure-Dart document database with zero-copy documents, a
+  log-structured storage engine and pluggable object-store backends.
+version: 1.0.0
+homepage: https://github.com/unk-404/dart_velxodb
+repository: https://github.com/unk-404/dart_velxodb
+issue_tracker: https://github.com/unk-404/dart_velxodb/issues
+topics:
+  - database
+  - embedded
+  - storage
+  - nosql
+  - document
 
 environment:
-  sdk: ^3.13.5
+  sdk: ^3.13.0
 
 resolution: workspace
 
 dependencies:
   blit: ^0.1.6
-  brotli_neo: ^0.1.2
-  lzo_neo: ^0.1.2
-  parquet: ^0.1.2
-  snappy_neo: ^0.1.2
-  zstd_neo: ^0.1.2
 
 dev_dependencies:
   lints: ^6.0.0

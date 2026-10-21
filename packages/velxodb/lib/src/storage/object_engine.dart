@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:blit/blit.dart';
 
+import '../errors.dart';
 import '../serde/string_view.dart';
 import 'arena.dart';
 import 'manifest.dart';
@@ -95,9 +96,31 @@ final class ObjectStoreEngine {
 
     final walKeys = await store.list(_key(walPrefix));
     walKeys.sort();
+    // Fetch pending WAL objects in small concurrent bursts: an object store's
+    // cost is round trips, not bandwidth, and replay order is preserved below.
+    const burst = 8;
+    final payloads = <String, Uint8List?>{};
+    for (var start = 0; start < walKeys.length; start += burst) {
+      final end = start + burst < walKeys.length
+          ? start + burst
+          : walKeys.length;
+      final slice = walKeys.sublist(start, end);
+      final fetched = await Future.wait(<Future<Uint8List?>>[
+        for (final key in slice) store.get(key),
+      ]);
+      for (var i = 0; i < slice.length; i++) {
+        payloads[slice[i]] = fetched[i];
+      }
+    }
     for (final key in walKeys) {
-      final payload = await store.get(key);
-      if (payload == null) continue;
+      final payload = payloads[key];
+      if (payload == null) {
+        // The key index listed an object that does not exist. Silently
+        // skipping it would drop a committed write; refuse to open instead.
+        throw VelxoCorruptException(
+          'object store lost a write-ahead object: $key',
+        );
+      }
       WalBatch.decode(payload, (kind, walKey, value) {
         if (kind == WalOpKind.put) {
           final ref = _arena.append(value!);
@@ -136,9 +159,7 @@ final class ObjectStoreEngine {
   }
 
   /// Appends one WAL object containing every put.
-  Future<void> putMany(
-    List<({Uint8List key, Bytes document})> entries,
-  ) async {
+  Future<void> putMany(List<({Uint8List key, Bytes document})> entries) async {
     if (entries.isEmpty) return;
     final ops = <WalOp>[
       for (final entry in entries)
@@ -311,8 +332,7 @@ final class ObjectStoreEngine {
 
       Bytes? document;
       var matched = false;
-      if (memIndex < memKeys.length &&
-          _sameKey(memKeys[memIndex], winner)) {
+      if (memIndex < memKeys.length && _sameKey(memKeys[memIndex], winner)) {
         document = memDocs[memIndex];
         memIndex++;
         matched = true;

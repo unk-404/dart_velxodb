@@ -1,6 +1,5 @@
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/storage.dart';
@@ -65,7 +64,9 @@ void main() {
     });
 
     test('rejects bad headers', () {
-      final good = (BlockWriter()..append(message(1, 'x'))).finish().asUint8List();
+      final good = (BlockWriter()..append(message(1, 'x')))
+          .finish()
+          .asUint8List();
       for (final mutate in <void Function(Uint8List)>[
         (b) => b[0] = 0,
         (b) => b[1] = 9,

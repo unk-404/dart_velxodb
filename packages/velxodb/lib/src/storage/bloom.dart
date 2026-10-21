@@ -34,8 +34,7 @@ final class BloomFilter {
   }
 
   /// Wraps existing bits.
-  BloomFilter._(this.bits, this.hashCount)
-    : bitCount = bits.length * 8;
+  BloomFilter._(this.bits, this.hashCount) : bitCount = bits.length * 8;
 
   /// Backing bits.
   final Uint8List bits;

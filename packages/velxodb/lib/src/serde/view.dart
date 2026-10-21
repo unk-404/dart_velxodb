@@ -70,8 +70,9 @@ final class DocView {
         offset: offset,
       );
     }
-    final bodyLength =
-        large ? VxsLe.u32(buffer, offset + 4) : VxsLe.u16(buffer, offset + 4);
+    final bodyLength = large
+        ? VxsLe.u32(buffer, offset + 4)
+        : VxsLe.u16(buffer, offset + 4);
     final bodyStart = offset + headerSize;
     final bodyEnd = bodyStart + bodyLength;
     if (bodyEnd > end) {
@@ -111,7 +112,11 @@ final class DocView {
   }
 
   /// Parses a document and verifies its checksum when one is present.
-  static DocView parseVerified(Uint8List buffer, [int offset = 0, int? length]) {
+  static DocView parseVerified(
+    Uint8List buffer, [
+    int offset = 0,
+    int? length,
+  ]) {
     final view = parse(buffer, offset, length);
     view.verifyChecksum();
     return view;
@@ -333,7 +338,10 @@ final class DocView {
       maxDepth: maxDepth,
     );
     if (issues.isNotEmpty) {
-      throw VxsFormatException(issues.first.toString(), offset: issues.first.offset);
+      throw VxsFormatException(
+        issues.first.toString(),
+        offset: issues.first.offset,
+      );
     }
   }
 
@@ -477,11 +485,7 @@ final class DocView {
     VxsType.bytes ||
     VxsType.stringList ||
     VxsType.intList ||
-    VxsType.doc => Bytes.view(
-      buffer,
-      cursor.valueOffset,
-      cursor.valueLength,
-    ),
+    VxsType.doc => Bytes.view(buffer, cursor.valueOffset, cursor.valueLength),
   };
 
   Uint8List _slice(int start, int length) =>
@@ -588,15 +592,17 @@ final class DocCursor {
         }
       default:
         final length = _readVarint();
+        // Check before adding: a crafted varint can overflow `_pos + length`
+        // on a 64-bit VM and slip past the bound check below.
+        if (length < 0 || length > _end - _pos) {
+          throw VxsFormatException(
+            'length-delimited value of $length bytes overruns the document',
+            offset: _pos,
+          );
+        }
         _valueStart = _pos;
         _valueLength = length;
         _pos += length;
-        if (_pos > _end) {
-          throw VxsFormatException(
-            'length-delimited value of $length bytes overruns the document',
-            offset: _valueStart,
-          );
-        }
     }
     return true;
   }
@@ -628,11 +634,5 @@ final class DocCursor {
     throw VxsFormatException('varint longer than 10 bytes', offset: _pos);
   }
 
-  static const List<int> _varintPow2 = <int>[
-    1,
-    128,
-    16384,
-    2097152,
-    268435456,
-  ];
+  static const List<int> _varintPow2 = <int>[1, 128, 16384, 2097152, 268435456];
 }

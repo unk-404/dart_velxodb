@@ -13,9 +13,9 @@ Future<Uint8List> buildSegmentInBackground(
   final transferable = TransferableTypedData.fromList(<Uint8List>[batch]);
   final result = await Isolate.run(() {
     final data = transferable.materialize().asUint8List();
-    return TransferableTypedData.fromList(
-      <Uint8List>[buildSegmentFromBatch(data, blockTargetSize)],
-    );
+    return TransferableTypedData.fromList(<Uint8List>[
+      buildSegmentFromBatch(data, blockTargetSize),
+    ]);
   });
   return result.materialize().asUint8List();
 }

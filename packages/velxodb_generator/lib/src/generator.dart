@@ -114,6 +114,23 @@ String generateModel(ModelSpec spec) {
   if (key.kind != FieldKind.string) {
     throw ArgumentError('keyField ${spec.keyField} must be a string');
   }
+  // Field ids are the on-disk identity and the encoder requires ascending
+  // order; catch a bad spec at generation time instead of at the first write.
+  var previousId = 0;
+  for (final field in fields) {
+    if (field.id <= previousId) {
+      throw ArgumentError(
+        'field ${field.name} has id ${field.id}; ids must be positive and '
+        'strictly ascending (previous was $previousId)',
+      );
+    }
+    if (field.id > 0xFFFF) {
+      throw ArgumentError(
+        'field ${field.name} has id ${field.id}; maximum is 65535',
+      );
+    }
+    previousId = field.id;
+  }
 
   final out = StringBuffer();
   out.writeln('// GENERATED CODE - DO NOT MODIFY BY HAND.');
@@ -153,9 +170,7 @@ String generateModel(ModelSpec spec) {
   out.writeln();
   for (final field in fields) {
     out.writeln('  /// Wire id of `${field.name}`.');
-    out.writeln(
-      '  static const int _${field.name}Id = ${field.id};',
-    );
+    out.writeln('  static const int _${field.name}Id = ${field.id};');
   }
   out.writeln();
   out.writeln('  /// Primary key bytes for this model.');
@@ -176,9 +191,7 @@ String generateModel(ModelSpec spec) {
     };
     final expression = 'value.${field.name}';
     if (field.nullable) {
-      out.writeln(
-        '    final ${field.name}Value = $expression;',
-      );
+      out.writeln('    final ${field.name}Value = $expression;');
       out.writeln(
         '    if (${field.name}Value != null) '
         'builder.$method(_${field.name}Id, ${field.name}Value);',
@@ -205,9 +218,7 @@ String generateModel(ModelSpec spec) {
         : field.defaultValue == null
         ? '!'
         : ' ?? ${_literal(field)}';
-    out.writeln(
-      '    ${field.name}: view.$getter(_${field.name}Id)$fallback,',
-    );
+    out.writeln('    ${field.name}: view.$getter(_${field.name}Id)$fallback,');
   }
   out.writeln('  );');
   out.writeln();
@@ -240,11 +251,11 @@ String generateModel(ModelSpec spec) {
   out.writeln(
     '  static TypedCollection<${spec.className}> open(VelxoDatabase db) {',
   );
-  out.writeln("    final collection = db.collection('${spec.collectionName}');");
-  out.writeln('    ensureIndexes(collection);');
   out.writeln(
-    '    return TypedCollection<${spec.className}>(',
+    "    final collection = db.collection('${spec.collectionName}');",
   );
+  out.writeln('    ensureIndexes(collection);');
+  out.writeln('    return TypedCollection<${spec.className}>(');
   out.writeln('      collection,');
   out.writeln('      encodeInto,');
   out.writeln('      decodeFrom,');

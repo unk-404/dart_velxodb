@@ -1,10 +1,18 @@
 name: velxodb_generator
-description: Code generator for velxodb typed models. Dev-time only.
-version: 0.1.0
-publish_to: none
+description: >-
+  Development-time model and codec generator for velxodb. Emits plain Dart with
+  stable field ids; no reflection or runtime code generation.
+version: 1.0.0
+homepage: https://github.com/unk-404/dart_velxodb
+repository: https://github.com/unk-404/dart_velxodb
+issue_tracker: https://github.com/unk-404/dart_velxodb/issues
+topics:
+  - database
+  - codegen
+  - velxodb
 
 environment:
-  sdk: ^3.13.5
+  sdk: ^3.13.0
 
 resolution: workspace
 

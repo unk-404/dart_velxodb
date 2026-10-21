@@ -19,7 +19,10 @@ void main() {
       final source = generateModel(spec);
       expect(source, contains('static void encodeInto('));
       expect(source, contains('static Message decodeFrom(DocView view)'));
-      expect(source, contains('static void ensureIndexes(Collection collection)'));
+      expect(
+        source,
+        contains('static void ensureIndexes(Collection collection)'),
+      );
       expect(source, contains('TypedCollection<Message>'));
       expect(source, contains('encodeInto,'));
       expect(source, contains('decodeFrom,'));
@@ -58,6 +61,30 @@ void main() {
         fields: <FieldSpec>[FieldSpec('id', 1, FieldKind.int64)],
       );
       expect(() => generateModel(bad), throwsArgumentError);
+    });
+
+    test('rejects duplicate or descending field ids', () {
+      const duplicate = ModelSpec(
+        className: 'Bad',
+        collectionName: 'bad',
+        keyField: 'id',
+        fields: <FieldSpec>[
+          FieldSpec('id', 1, FieldKind.string),
+          FieldSpec('other', 1, FieldKind.string),
+        ],
+      );
+      expect(() => generateModel(duplicate), throwsArgumentError);
+
+      const descending = ModelSpec(
+        className: 'Bad',
+        collectionName: 'bad',
+        keyField: 'id',
+        fields: <FieldSpec>[
+          FieldSpec('id', 2, FieldKind.string),
+          FieldSpec('other', 1, FieldKind.string),
+        ],
+      );
+      expect(() => generateModel(descending), throwsArgumentError);
     });
   });
 }

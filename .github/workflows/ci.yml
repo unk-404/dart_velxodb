@@ -5,132 +5,299 @@ on:
     branches: [main]
   pull_request:
 
+# PRs supersede their own runs; main never cancels a run that publishes charts.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DART_VERSION: 3.13.5
 
 jobs:
+  lint:
+    name: format + analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_VERSION }}
+      - name: Cache pub
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
+      - name: Resolve workspace
+        run: dart pub get
+      - name: Check formatting
+        run: dart format --output=none --set-exit-if-changed .
+      - name: Analyze
+        run: dart analyze --fatal-infos
+
   test:
     name: test / ${{ matrix.os }}
+    needs: [lint]
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
         with:
-          sdk: stable
+          sdk: ${{ env.DART_VERSION }}
+      - name: Cache pub
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
       - name: Resolve workspace
         run: dart pub get
-      - name: Analyze
-        run: dart analyze --fatal-infos
-      - name: Test
+      - name: Test every package (crash matrix runs in its own job)
         shell: bash
         run: |
           set -euo pipefail
           for dir in packages/*/; do
             if [ -d "${dir}test" ]; then
               echo "::group::dart test ${dir}"
-              dart test -j 1 "${dir}test"
+              dart test -j 1 -x crash "${dir}test"
               echo "::endgroup::"
             fi
           done
 
+  crash:
+    name: crash matrix
+    needs: [lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_VERSION }}
+      - name: Cache pub
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
+      - name: Resolve workspace
+        run: dart pub get
+      # Every crash point: torn WAL frame byte, segment before manifest, torn
+      # manifest fallback, pre-truncate replay, corrupt block and segment.
+      - name: Run crash matrix
+        run: dart test -j 1 --tags crash packages/velxodb/test --chain-stack-traces
+
   web:
-    name: web / ${{ matrix.target }}
+    name: web compile / ${{ matrix.target }}
+    needs: [lint]
     strategy:
       fail-fast: false
       matrix:
         target: [js, wasm]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
         with:
-          sdk: stable
+          sdk: ${{ env.DART_VERSION }}
+      - name: Cache pub
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
       - name: Resolve workspace
         run: dart pub get
-      # Compiling the entry point proves the library graph stays web-safe.
+      # This entry point imports the whole public surface, including the OPFS
+      # database, so a dart:io leak or a web-incompatible import fails here.
       - name: Compile ${{ matrix.target }}
         run: |
           if [ "${{ matrix.target }}" = "wasm" ]; then
-            dart compile wasm packages/velxodb/example/velxodb_example.dart -o /tmp/smoke.wasm
+            dart compile wasm packages/velxodb/example/web_smoke.dart -o /tmp/smoke.wasm
           else
-            dart compile js packages/velxodb/example/velxodb_example.dart -o /tmp/smoke.js
+            dart compile js packages/velxodb/example/web_smoke.dart -o /tmp/smoke.js
           fi
 
   browser:
-    name: browser / chrome
+    name: browser / chrome / ${{ matrix.compiler }}
+    needs: [lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [dart2js, dart2wasm]
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
         with:
-          sdk: stable
+          sdk: ${{ env.DART_VERSION }}
+      - name: Cache pub
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
       - name: Resolve workspace
         run: dart pub get
       # Compiling is not enough: JS integer semantics and the handwritten UTF-8
-      # encoder can only be checked by running the suite in a browser.
+      # encoder can only be checked by running the suite in a browser. The wasm
+      # leg runs the OPFS database suite, not just the codecs.
       - name: Run the suite in Chrome
         working-directory: packages/velxodb
-        run: dart test -p chrome -j 1 test
+        run: |
+          if [ "${{ matrix.compiler }}" = "dart2wasm" ]; then
+            dart test -p chrome -c dart2wasm -j 1 test/web test/storage/opfs_store_test.dart test/serde/web_test.dart
+          else
+            dart test -p chrome -j 1 test
+          fi
 
-  crash:
-    name: crash matrix
-    needs: [test]
+  publish:
+    name: publish dry-run
+    needs: [lint, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
         with:
-          sdk: stable
+          sdk: ${{ env.DART_VERSION }}
+      - name: Cache pub
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
       - name: Resolve workspace
         run: dart pub get
-      # Every crash point: torn WAL frame byte, segment before manifest,
-      # manifest fallback, pre-truncate replay, corrupt segment.
-      - name: Run crash matrix
-        run: dart test packages/velxodb/test/crash -j 1 --chain-stack-traces
+      - name: Validate velxodb
+        working-directory: packages/velxodb
+        run: dart pub publish --dry-run
+      - name: Validate velxodb_generator
+        working-directory: packages/velxodb_generator
+        run: dart pub publish --dry-run
 
   bench:
     name: benchmark
-    needs: [test, web, browser]
+    needs: [test]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
         with:
-          sdk: stable
+          sdk: ${{ env.DART_VERSION }}
+      - name: Cache pub
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
       - name: Resolve workspace
         run: dart pub get
-      - name: Run benchmarks
+      # The micro suites are JIT (that is what benchmark_test reports); the
+      # comparison harness is AOT. The cards label which is which.
+      - name: Run micro suites
         working-directory: benchmarks
-        run: dart run benchmark_test --output jsonl . > "$GITHUB_WORKSPACE/bench.jsonl"
-      - name: Render chart
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          dart run benchmark_test --output jsonl suites > results/main.raw.jsonl
+          grep -E '^\{' results/main.raw.jsonl > results/main.jsonl
+      - name: Run real-disk scenarios
+        working-directory: benchmarks
+        run: |
+          set -euo pipefail
+          dart run scenarios/open_rss_bench.dart --quick
+          dart run scenarios/durability_bench.dart
+          dart run scenarios/object_store_bench.dart
+      - name: Normalize and gate
+        working-directory: benchmarks
+        run: |
+          set -euo pipefail
+          dart run tool/normalize.dart --strict
+          dart run tool/gate.dart
+      - name: Render headline card
         uses: unk-404/benchcat@master
         with:
-          input: bench.jsonl
-          format: benchmark_test
-          out: assets/benchmarks.svg
           config: benchmarks/benchcat.toml
-      - name: Upload chart
+          out: assets/benchmarks.svg
+          font: sniglet
+      - name: Render format card
+        uses: unk-404/benchcat@master
+        with:
+          config: benchmarks/cards/format.toml
+          out: assets/benchmarks-format.svg
+          font: sniglet
+      - name: Render storage card
+        uses: unk-404/benchcat@master
+        with:
+          config: benchmarks/cards/storage.toml
+          out: assets/benchmarks-storage.svg
+          font: sniglet
+      - name: Render query card
+        uses: unk-404/benchcat@master
+        with:
+          config: benchmarks/cards/query.toml
+          out: assets/benchmarks-query.svg
+          font: sniglet
+      - name: Render object-store card
+        uses: unk-404/benchcat@master
+        with:
+          config: benchmarks/cards/objectstore.toml
+          out: assets/benchmarks-objectstore.svg
+          font: sniglet
+      - name: Upload raw results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: benchmarks/results
+          if-no-files-found: error
+      - name: Upload charts
         uses: actions/upload-artifact@v4
         with:
           name: benchmarks-svg
-          path: assets/benchmarks.svg
+          path: |
+            assets/benchmarks.svg
+            assets/benchmarks-format.svg
+            assets/benchmarks-storage.svg
+            assets/benchmarks-query.svg
+            assets/benchmarks-objectstore.svg
           if-no-files-found: error
 
   compare:
     name: compare / isar + sled
     needs: [test]
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
         with:
-          sdk: stable
+          sdk: ${{ env.DART_VERSION }}
       - uses: dtolnay/rust-toolchain@stable
+      - name: Cache pub
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            benchmarks/compare/rust/target
+          key: cargo-${{ hashFiles('benchmarks/compare/rust/Cargo.lock') }}
+          restore-keys: cargo-
       - name: Resolve workspace
         run: dart pub get
       - name: Resolve comparison harness
@@ -151,11 +318,19 @@ jobs:
         with:
           config: benchmarks/compare/benchcat-engine.toml
           out: assets/benchmarks-engine.svg
+          font: sniglet
       - name: Render database chart
         uses: unk-404/benchcat@master
         with:
           config: benchmarks/compare/benchcat-db.toml
           out: assets/benchmarks-db.svg
+          font: sniglet
+      - name: Upload raw comparison data
+        uses: actions/upload-artifact@v4
+        with:
+          name: compare-json
+          path: benchmarks/compare/out
+          if-no-files-found: error
       - name: Upload comparison charts
         uses: actions/upload-artifact@v4
         with:
@@ -170,6 +345,7 @@ jobs:
     needs: [bench, compare]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -184,7 +360,19 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add assets/benchmarks.svg assets/benchmarks-engine.svg assets/benchmarks-db.svg
+          git add assets/benchmarks.svg \
+                  assets/benchmarks-format.svg \
+                  assets/benchmarks-storage.svg \
+                  assets/benchmarks-query.svg \
+                  assets/benchmarks-objectstore.svg \
+                  assets/benchmarks-engine.svg \
+                  assets/benchmarks-db.svg
           git diff --cached --quiet && exit 0
           git commit -m "chore(bench): refresh charts [skip ci]"
-          git push
+          # Another push may have landed while the benchmarks ran; rebase and
+          # retry instead of failing the publish step.
+          for attempt in 1 2 3; do
+            git pull --rebase --autostash origin main && git push && break
+            echo "push attempt $attempt failed; retrying" >&2
+            sleep $((attempt * 5))
+          done

@@ -94,7 +94,10 @@ _Generated _randomDocument(Random random, {bool checksum = false}) {
         ]);
         fields.add(VxsField(id, 'sl$id', VxsType.stringList));
       default:
-        builder.putBytes(id, List<int>.generate(random.nextInt(20), (_) => random.nextInt(256)));
+        builder.putBytes(
+          id,
+          List<int>.generate(random.nextInt(20), (_) => random.nextInt(256)),
+        );
         fields.add(VxsField(id, 'b$id', VxsType.bytes));
     }
   }

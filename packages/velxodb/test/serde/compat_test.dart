@@ -85,13 +85,14 @@ void main() {
 
     test('single-byte mutations never escape as RangeError', () {
       final random = Random(7);
-      final source = (DocBuilder(schemaId: 1, schemaVersion: 1)
-            ..putString(1, 'hello')
-            ..putInt(2, 1234)
-            ..putFloat64(3, 3.5)
-            ..putString(4, '中文字段'))
-          .finish()
-          .asUint8List();
+      final source =
+          (DocBuilder(schemaId: 1, schemaVersion: 1)
+                ..putString(1, 'hello')
+                ..putInt(2, 1234)
+                ..putFloat64(3, 3.5)
+                ..putString(4, '中文字段'))
+              .finish()
+              .asUint8List();
 
       for (var i = 0; i < 5000; i++) {
         final mutated = Uint8List.fromList(source);

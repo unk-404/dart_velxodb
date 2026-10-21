@@ -4,20 +4,21 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/velxodb.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text, int number) => (DocBuilder(schemaId: 1)
-      ..putString(1, text)
-      ..putInt(2, number))
-    .finish();
+Bytes doc(String text, int number) =>
+    (DocBuilder(schemaId: 1)
+          ..putString(1, text)
+          ..putInt(2, number))
+        .finish();
 
-List<String> keysOf(List<ScanEntry> entries) =>
-    <String>[for (final entry in entries) String.fromCharCodes(entry.key)];
+List<String> keysOf(List<ScanEntry> entries) => <String>[
+  for (final entry in entries) String.fromCharCodes(entry.key),
+];
 
 void main() {
   late Directory root;
@@ -70,7 +71,9 @@ void main() {
       expect(keysOf(collection.lookupByIndexSync(1, 'a')), <String>['a']);
       expect(keysOf(collection.lookupByIndexSync(1, 'ab')), <String>['b']);
       expect(keysOf(collection.lookupByIndexSync(1, '')), <String>['c']);
-      expect(keysOf(collection.lookupByIndexSync(1, 'a\u0000b')), <String>['d']);
+      expect(keysOf(collection.lookupByIndexSync(1, 'a\u0000b')), <String>[
+        'd',
+      ]);
     });
 
     test('backfills existing documents when created later', () {
@@ -88,13 +91,21 @@ void main() {
       db.flushSync();
       collection.putSync(k('c'), doc('c', 7));
 
-      expect(keysOf(collection.lookupByIndexSync(2, 7)), <String>['a', 'b', 'c']);
+      expect(keysOf(collection.lookupByIndexSync(2, 7)), <String>[
+        'a',
+        'b',
+        'c',
+      ]);
 
       await db.close();
       db = VelxoDatabase.openSync(root.path);
       collection = db.collection('items');
       expect(collection.indexes[2]?.type, VxsType.int64);
-      expect(keysOf(collection.lookupByIndexSync(2, 7)), <String>['a', 'b', 'c']);
+      expect(keysOf(collection.lookupByIndexSync(2, 7)), <String>[
+        'a',
+        'b',
+        'c',
+      ]);
     });
 
     test('does not leak index entries into the collection scan', () {
@@ -103,8 +114,10 @@ void main() {
       collection.putSync(k('b'), doc('b', 7));
       final scanned = collection.scanSync();
       expect(keysOf(scanned), <String>['a', 'b']);
-      expect(scanned.map((e) => DocView.parse(e.value.asUint8List()).getInt(2)),
-          <int>[7, 7]);
+      expect(
+        scanned.map((e) => DocView.parse(e.value.asUint8List()).getInt(2)),
+        <int>[7, 7],
+      );
     });
 
     test('re-registering an index is idempotent and rejects type changes', () {

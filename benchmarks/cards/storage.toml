@@ -1,0 +1,86 @@
+# Storage card: block/WAL/segment codecs and the engine write path (in memory),
+# followed by the real-filesystem rows (open, RSS, disk, durability tiers).
+[font]
+family = "sniglet"
+
+[render]
+title = "velxodb - storage"
+subtitle = "{platform|local} - commit {commit:short|local} - micro suite + real-disk scenarios"
+footer = "rows above 'Real filesystem' use a no-I/O directory"
+width = 920
+kaomoji = ""
+
+[[series]]
+label = "velxodb"
+input = "benchmarks/results/storage.json"
+format = "json"
+color = "#5B8FF9"
+
+[[row]]
+id = "storage block.write"
+
+[[row]]
+id = "storage block.read"
+
+[[row]]
+id = "storage wal.frame"
+
+[[row]]
+id = "storage wal.batch"
+
+[[row]]
+id = "storage memtable.get"
+
+[[row]]
+id = "storage memtable.put"
+
+[[row]]
+id = "storage memtable.range"
+
+[[row]]
+id = "storage segment.build"
+
+[[row]]
+id = "storage segment.find"
+
+[[row]]
+id = "storage segment.scan"
+
+[[row]]
+id = "storage engine.put"
+
+[[row]]
+id = "storage engine.get"
+
+[[row]]
+id = "storage engine.get.segment"
+
+[[row]]
+id = "open.import.docs_per_s"
+
+[[row]]
+id = "open.reopen.ms"
+
+[[row]]
+id = "open.rss_mb"
+
+[[row]]
+id = "open.disk_mb"
+
+[[row]]
+id = "open.read_p50_us"
+
+[[row]]
+id = "open.read_p95_us"
+
+[[row]]
+id = "durability.always.put"
+
+[[row]]
+id = "durability.batched.put"
+
+[[row]]
+id = "durability.none.put"
+
+[[row]]
+id = "durability.wal_bytes_per_doc"

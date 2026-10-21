@@ -27,7 +27,8 @@ void main() {
     test('rejects truncation and corruption', () {
       final bytes = sample().encode();
       expect(
-        () => Manifest.decode(Uint8List.sublistView(bytes, 0, bytes.length - 3)),
+        () =>
+            Manifest.decode(Uint8List.sublistView(bytes, 0, bytes.length - 3)),
         throwsA(isA<VxsFormatException>()),
       );
       final corrupted = Uint8List.fromList(bytes);

@@ -1,208 +1,115 @@
-## 0.1.0
+## 1.0.0 - 2026-10-21
 
-- Initial workspace scaffold.
-- `VXS` v1 binary format (`package:velxodb/serde.dart`):
-  - 6-byte header, delta-encoded field keys (1 byte per field), zigzag varints;
-  - `DocView` zero-copy reads, `DocCursor` allocation-free traversal;
-  - `DocBuilder` writes field values straight into their final position, with a
-    single-pass UTF-8 encoder for the common short-string path;
-  - unknown fields can be re-emitted byte-for-byte for forward compatibility.
-- Tests: round trips, UTF-8 edge cases (127/128-byte prefix boundary, surrogate
-  pairs, >64KiB bodies), ordering enforcement, unknown-field preservation, fuzz.
-- `StringView`: zero-copy UTF-8 comparison, prefix matching, CRC-based hashing
-  and no-allocation equality against `String`.
-- CRC-32C (`compute` + streaming `update`) and an optional per-document checksum
-  trailer verified by `DocView.parseVerified`.
-- `DocSink` batch writer: many documents into one buffer, no per-document
-  allocation (~165 ns per 130 B document on AOT).
-- Browser test suite (`dart test -p chrome`): JS integer semantics, handwritten
-  UTF-8, CRC vectors and the batch writer all run in Chrome in CI.
-- `DocView.validate(schema)` reports every structural problem at once;
-  `DocView.project(schema, ids)` reads several fields in one scan (~3x faster
-  than calling the individual getters).
-- Structured fuzzing: mutated-but-valid documents only ever raise
-  `VxsFormatException`.
-- Storage layer (`package:velxodb/storage.dart`): self-delimiting blocks,
-  checksummed WAL frames with crash recovery, and a minimal `StorageFile`
-  abstraction with an in-memory implementation.
-- Memtable with open addressing (~2.2x faster than `HashMap` for inserts and
-  lookups), chunked document arena with stable views, and a synchronous write
-  path (WAL → arena → memtable) with an async facade.
-- Segments: immutable blocks plus a sorted primary index and a bloom filter,
-  with a checksum over all metadata. `SegmentReader.find` is a bloom probe plus
-  a binary search and returns a zero-copy document view.
-- Directory and manifest: two alternating manifest slots with generations and
-  checksums, plus `StorageEngine.flushSync()` and `compactSync()`.
-- Real local files: `LocalStorageDirectory` (dart:io, synchronous), `autoSync`
-  and `autoFlush` policies, and a web stub so the package still compiles to
-  Wasm. 1e6 documents: 355k docs/s import, p50 1.5 us point reads, 1.21x disk.
-- Segments are memory-mapped on open instead of copied; a 1e6-document database
-  opens in 38 ms with a 27 MB resident-set increase. Closing an engine now
-  unmaps segments and refuses further reads.
-- Query layer: `Velxo.open`, `VelxoDatabase.collection`, a CRC-checked catalog
-  with atomic temp-and-rename saves, and collections whose keys are prefixed
-  with a stable two-byte id. Point reads, writes, deletes and sorted prefix
-  scans merge the memtable with segments newest-first and honour tombstones.
-- Streaming `CollectionCursor` with prefix/range bounds (segment cursors seek by
-  binary search instead of scanning), predicate filters over zero-copy
-  `DocView`s, and limits. Scan throughput roughly 4M docs/s.
-- Memtable gains an index-based skip list next to the hash table: range scans
-  seek in O(log n + k) instead of collecting and sorting the whole memtable
-  (~17.5M docs/s for a 1k window over 50k entries), and flush now iterates in
-  key order.
-- Secondary indexes: `Collection.createIndex(fieldId, type)` allocates its own
-  two-byte namespace and stores `[indexId][encodedValue][primaryKey]` entries.
-  Integers use an order-preserving sign/magnitude encoding and strings use an
-  escaped UTF-8 encoding, so prefix lookups are unambiguous. Indexes are
-  maintained on write/delete (read-old, then delta), backfilled when created,
-  persisted in catalog v2, and lookups verify the field value to tolerate
-  non-transactional crashes.
-- Index range scans (`lookupByIndexRangeSync`) and key-cursor pagination
-  (`pageSync` with `after`/`next`) that does not drift when data changes.
-- Query planner: a `Predicate` AST (`eq/lt/lte/gt/gte/between/and/or/not`),
-  plans that pick an index for an indexable `and` branch and fall back to a scan
-  otherwise, with a residual filter so results never depend on the plan.
-  `collection.explainSync` reports the choice.
-- Typed models: `DocumentSchema<T>` / `TypedCollection<T>` and a dev-time
-  generator, now in its own package `velxodb_generator`, that turns a `ModelSpec`
-  into plain Dart: `const` field ids, static `encodeInto`/`decodeFrom`, generated
-  index creation and a typed collection opener built from static tear-offs. No
-  schema objects, closures or reflection on the hot path (AOT: decode 366 ns vs
-  392 ns through `DocumentSchema`). Generated code is committed as a fixture and
-  compiled by the test suite.
-- Schema versions and migrations: documents carry a schema version, generated
-  models declare `documentSchemaVersion` and per-field defaults so a new version
-  can read old documents, and `collection.migrateSync` / `migratePageSync` apply
-  a validated version chain with resumable pages, idempotent re-runs and
-  byte-preserving `copyFields` for unknown fields.
-- Reference bindings: `collection.createReference(fieldId, 'target')` persists
-  `(source, field, target, onDelete)` in catalog v3, creates the reverse index
-  and applies `restrict` (default) or `cascade` when a target is deleted.
-  Optional `enforceReferences` verifies targets on write. A document and all of
-  its index entries now commit in one WAL frame via `engine.applyBatchSync`.
-- Graph edges: `db.graph` stores typed, bidirectional edges
-  (`[relationId][direction][length][node][node]`) with properties, written in one
-  frame; relation names live in catalog v4. Adjacency is a prefix scan
-  (~1.9M links/s, ~1.2M adjacency queries/s), `walk` does a depth-limited BFS
-  across selected or all relations, and `danglingEdges` finds edges whose target
-  document is gone.
-- Object storage: a generic `ObjectStore` SPI (`get`/`put`/`delete`/`deleteMany`/
-  `list`), `SimulatedObjectStore` with request/byte counters, and an
-  `ObjectStoreEngine` whose segments and manifest are objects, whose write
-  batches are WAL objects, and whose segments are fetched lazily through an LRU
-  cache. Benchmark (`benchmark/object_store_bench.dart`): 200k-doc import in 412
-  requests, churn of 120k changes in 123 requests, reopen in 2 requests.
-- Backend compatibility test: a segment written by the local engine opens in the
-  object-store engine and vice versa, proving the format is I/O-agnostic.
-- `VelxoDatabase.close(flush: true)` for graceful shutdown: reopening then reads
-  the manifest and maps segments instead of replaying the whole WAL (11 ms vs
-  1.5 s for 100k unflushed documents).
-- Full-text primitives: a `Tokenizer` SPI (`WordTokenizer`, `NgramTokenizer`),
-  inverted postings stored as `[indexId][encodedTerm][primaryKey]` in the same
-  engine, maintained in the same WAL frame as the document, backfilled on
-  creation, and queried with `any`/`all` modes plus per-hit verification.
-  ~482k docs/s on 64 hits (JIT, including verification).
-- Transactions: `db.transactionSync` buffers all writes (collections, indexes,
-  references, graph), makes them visible to point reads, and commits the set as
-  one WAL frame; an exception applies nothing. Single writer, no nesting, no
-  MVCC. Verified with a torn-frame test.
-- Safety defaults: the local directory takes an exclusive `LOCK` (a second open
-  fails), `VelxoDatabase.openSync` auto-flushes at 64 MB by default, and
-  `close(flush: true)` gives a fast graceful reopen.
-- Durability tiers: `Durability.always` fsyncs every WAL frame (one fsync per
-  batch or transaction), the default `Durability.batched` fsyncs on flush, close
-  and `db.sync()` (the group-commit point), and `Durability.none` leaves
-  durability to the caller. Segments now auto-compact at 4 by default.
-- Integrity check: `db.checkSync(deep: true)` verifies the manifest, segment
-  blocks (CRC + document parse), orphan files, and every secondary/full-text
-  posting against its document. Typed errors replace ad-hoc `StateError`s:
-  `VelxoLockedException`, `VelxoCorruptException`, `VelxoClosedException`,
-  `VelxoConflictException`, `VelxoNotFoundException`.
-- Corruption handling: if manifest files exist but none decodes, opening now
-  raises `VelxoCorruptException` instead of silently starting empty; a failed
-  open releases the directory lock.
-- Crash-point matrix: deterministic tests tear every byte of a transaction WAL
-  frame, ignore a segment written before its manifest commit, fall back from a
-  torn newest manifest, replay the pre-truncate WAL idempotently, and report a
-  truncated referenced segment as `VelxoCorruptException`. Runs as its own CI
-  job.
-- `checkSync` no longer opens a second WAL handle (which closed the shared
-  handle in in-memory directories), and opening a segment that fails to decode
-  now raises `VelxoCorruptException`.
-- Deferred maintenance: `VelxoDatabase.openSync(deferredMaintenance: true)`
-  moves the threshold-triggered flush and compaction off the write call through
-  a `MaintenanceScheduler` (microtask today, worker isolate later). Memory may
-  overshoot the threshold briefly; past 4x it flushes inline. WAL replay keeps
-  pending writes safe across close or crash.
-- Background flush: `VelxoDatabase.openSync(backgroundFlush: true)` builds the
-  segment on a background isolate (`Isolate.run`, snapshot transferred via
-  `TransferableTypedData`). Writes continue during the build; the memtable and
-  WAL reset only when no write landed after the snapshot, otherwise newer writes
-  shadow the committed segment. `waitForMaintenance()` awaits the build. The
-  web build falls back to an inline build.
-- Worker isolate: `VelxoWorker.open(path)` owns the only `VelxoDatabase` in a
-  dedicated isolate and exposes an async RPC facade (`put`/`get`/`delete`/
-  `page`/`flush`/`check`/`waitForMaintenance`/`close`). Requests from any
-  isolate are queued and executed one at a time, preserving the single-writer
-  contract while callers stay concurrent. Typed exceptions cross the boundary.
-  The web build exports an unsupported stub.
-- Read-only opens: `VelxoDatabase.openSync(path, readOnly: true)` replays the
-  WAL without truncating, rejects engine writes and catalog changes with
-  `VelxoReadOnlyException`, and refuses to create a missing database or
-  collection. Readers take a shared directory lock (many readers coexist);
-  writers stay exclusive.
-- Backup/restore: `db.backupSync(targetDirectory)` flushes and copies a
-  consistent file set (skipping LOCK) into an empty target;
-  `copyDatabase(source, target)` restores it. Both work on storage directories,
-  so the same code fits local and future object-store targets. Full copy only,
-  not incremental.
-- Index range: removed the redundant per-hit document decode and value
-  comparison; the cursor bounds already enforce the range. The 12k-hit
-  comparison drops from 12.9 ms to 11.0 ms (isar is still ~1.25x faster).
-- Versioning: added the normative `VERSIONING.md` policy and a `FORMAT` stamp
-  (major, minor, CRC-32C). A patch must be byte-identical and API-frozen, a
-  minor is transparent inside the same major, and a major requires the explicit
-  `VelxoDatabase.upgradeSync` with a downgrade path. New typed errors:
-  `VelxoIncompatibleException`, `VelxoUpgradeRequiredException`.
-- Major-upgrade undo journal: `UpgradeJournal` records original byte ranges
-  (and full content of deleted files) before an upgrade mutates them; rollback
-  applies them in reverse, so the downgrade path is an in-place reverse diff,
-  not a copy of the database. An interrupted upgrade is refused on open and
-  reverted with `VelxoDatabase.rollbackUpgradeSync(path)`.
-- Web/OPFS foundation: `OpfsObjectStore` implements the async `ObjectStore`
-  over blit's chunked OPFS `BytesFile`, with an append-only crash-safe key index
-  (intent before object, torn tail ignored). The existing `ObjectStoreEngine`
-  runs on top of it with the same segment/manifest bytes as the VM. Chrome tests
-  cover put/get/list/delete, a 300 KiB object, and an engine write/flush/reopen.
-- Web/OPFS facade: `VelxoWebDatabase.open(root:)` + `WebCollection` on the async
-  `ObjectStoreEngine`: document CRUD, ordered scans and key-cursor pages, with
-  the same VXS encoding and two-byte collection prefixes as the VM. The catalog
-  is stored as an object. `ObjectStoreEngine.scanRange` merges the memtable and
-  segments asynchronously, with newest-wins and tombstone handling. Chrome tests
-  cover CRUD/scan/page and a reopen; secondary indexes and transactions are the
-  next Web step.
-- Web/OPFS indexes: `createIndex`, `lookupByIndex` and `lookupByIndexRange` on
-  `WebCollection`, with the same order-preserving value codecs and posting key
-  layout as the VM, plus backfill. Index maintenance runs on put/delete and
-  lookups verify the document value. Chrome tests cover equality, range, update
-  and delete.
-- Web/OPFS transactions: `db.writeTxn` buffers document and index mutations in
-  a `WebTransaction`, reads its own writes, and commits them as one WAL object
-  via `ObjectStoreEngine.applyBatch`. A throw discards the buffer. Chrome tests
-  cover atomic document + index commits and deletes.
-- Web/OPFS references: `createReference` binds a field to a target collection,
-  indexes it, validates targets on put and enforces `restrict`/`cascade` on
-  delete by reverse index lookup. Chrome tests cover a missing target, restrict
-  and cascade.
-- Web/OPFS graph: `db.graph` links forward and reverse edges in one WAL object,
-  scans adjacency by prefix, and performs depth-capped BFS walks. Chrome tests
-  cover link/outgoing/incoming/walk/unlink.
-- Web/OPFS full-text: `createTextIndex`, `searchText` with `any`/`all` modes,
-  word/n-gram tokenizers, posting maintenance on put/delete and per-hit
-  verification. Web transactions also buffer text postings. Chrome tests cover
-  create/backfill, search, update and delete.
-- Single-writer lock now also works on POSIX: an in-process registry of
-  canonical paths complements the OS lock, which is process-wide there, so a
-  second open inside the same process is rejected on Linux and macOS too.
-- READMEs rewritten (workspace and package).
-- CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).
+First public release. VelxoDB is an embedded document database with a local
+memory-mapped engine, an object-store engine built from the same bytes, and a
+browser (OPFS) stack.
+
+### Storage
+
+- `VXS` v1 document format: 6-byte header, delta-encoded field ids (one byte per
+  field), zigzag varints, zero-copy `DocView`/`DocCursor`, forward-compatible
+  unknown fields and an optional CRC-32C trailer. `DocSink` writes many documents
+  into one buffer without per-document allocation.
+- Synchronous local engine: framed, checksummed WAL → memtable → immutable
+  segments → two-slot manifest. Segments are memory-mapped; point reads are a
+  bloom probe, a binary search and a zero-copy view.
+- Document blocks carry CRC-32C and are verified lazily: the first read that
+  touches a block checks it once, and compaction refuses to rewrite a corrupt
+  block instead of laundering it. The segment index, block table and bloom
+  filter have their own checksum.
+- Memtable combines an open-addressed hash table with a skip list, so point
+  lookups and narrow ordered ranges both avoid a scan.
+- Auto-flush (64 MB default), auto-compaction (four segments default),
+  deferred maintenance and background-isolate segment builds.
+- Stale first manifests recover from the WAL; a WAL with no manifest is not
+  treated as an empty database.
+- `Durability.always` / `batched` / `none`, with `db.sync()` as the group-commit
+  point.
+- Integrity check: `db.checkSync(deep: true)` verifies the manifest, every block,
+  orphan segments, and every secondary and full-text posting against its
+  document.
+- Typed errors: locked, corrupt, closed, conflict, constraint, not found,
+  read-only, incompatible, upgrade-required.
+
+### Query layer
+
+- Collections with stable two-byte key prefixes; ordered scans, prefix scans,
+  key-cursor pagination and streaming cursors.
+- Multi-document transactions: all writes are buffered, visible to point reads
+  and to index lookups inside the block, and committed as one WAL frame. Single
+  writer, no nesting, no MVCC; scans do not see uncommitted writes.
+- Secondary indexes on int32, int64, string and boolean fields, with
+  order-preserving value encodings, equality and range lookups, and per-hit
+  verification. A crash during creation leaves the index marked "not ready";
+  the next writable open finishes it, and queries fall back to a scan.
+- Query planner with `Predicate` (`eq`, ranges, `and`/`or`/`not`) and
+  `explainSync`; index plans still honour the query's key range.
+- Reference bindings with a reverse index and `restrict` / `cascade` deletion
+  policies. A cascade is one frame, cycle-safe and depth-limited; optional
+  `enforceReferences` validates targets on write, and `validateReferences()`
+  audits a bulk load afterwards.
+- Typed graph edges: forward and reverse edges in one frame, adjacency scans,
+  depth-limited BFS with cycle detection and `danglingEdges`.
+- Full-text primitives: pluggable tokenizers (`WordTokenizer`, `NgramTokenizer`),
+  inverted postings maintained in the document's frame, `any`/`all` queries and
+  per-hit verification.
+- Schema versions with resumable, idempotent migrations and byte-preserving
+  copies of unknown fields.
+- Typed models: `DocumentSchema` / `TypedCollection` and the separate
+  `velxodb_generator` package, which emits plain Dart with `const` field ids and
+  static codecs. No reflection and no runtime code generation.
+- Catalog v6: names are UTF-8 (v5 and older truncated non-ASCII names), and each
+  index records whether its backfill completed. Saves are atomic
+  (temporary file + rename).
+
+### Object storage and Web
+
+- `ObjectStore` SPI (`get`, `put`, `delete`, `deleteMany`, `list`) and
+  `SimulatedObjectStore` with request/byte counters. The engine's request shape
+  is one `PUT` per write batch, one segment `PUT` plus one manifest `PUT` per
+  flush, and a manifest `GET` plus a WAL `LIST` on open.
+- `ObjectStoreEngine`: segments and manifest are immutable objects, write batches
+  are small WAL objects, segments are fetched lazily with an LRU cache, and a
+  missing listed WAL object is reported instead of silently dropped.
+- `package:velxodb/testing.dart` provides `ObjectStoreConformance`, a contract
+  suite for custom backends.
+- OPFS: `OpfsObjectStore` over blit chunked files, with an append-only key index
+  that is written after the object (so a crash leaves an unreferenced object,
+  never a listed key with no object) and truncated at the first torn record.
+- `VelxoWebDatabase` / `WebCollection`: CRUD, ordered scans, pages, equality and
+  range indexes, atomic write transactions, reference validation and
+  `restrict`/`cascade`, typed graph edges with BFS, and full-text search. Every
+  mutation is a single WAL object; the database takes the same `FORMAT` gate as
+  the VM.
+- Writes and backfills are serialized inside the Web database, so two concurrent
+  reads-modify-writes cannot lose index postings. `collection.put` inside a
+  `writeTxn` body is rejected instead of committing behind the caller's back.
+- Web cross-tab exclusion: the OPFS database takes an origin-wide Web Lock
+  (`navigator.locks`), so a second tab opening the same root is refused; an
+  in-page registry rejects a second handle in the same page. Browsers without
+  the API fall back to the in-page guard.
+
+### Concurrency and operations
+
+- `VelxoWorker.open(path)` runs the database in a dedicated isolate and exposes
+  an async RPC facade. Requests from any isolate are queued and executed one at
+  a time.
+- Read-only opens replay the WAL without truncating and reject all writes,
+  including catalog changes; readers share the directory lock.
+- Backup/restore copies a consistent file set, skips the lock and the format
+  temporary file, refuses a database with an unfinished upgrade journal, and
+  streams large segments.
+- `A.B.C` versioning policy (`VERSIONING.md`), an atomically replaced `FORMAT`
+  stamp, an explicit major-upgrade entry point and an in-place undo journal with
+  exact-length restoration for the downgrade path.
+- Crash-point matrix in CI: every torn byte of a transaction frame, a segment
+  written before its manifest, a torn newest manifest and a corrupted block.
+
+### Known limits
+
+Single writer per database and one isolate per writable handle; POSIX advisory
+locks are process-wide, so a second writable open from another isolate in the
+same process is not detected (documented and planned). No MVCC: scans do not see
+uncommitted writes and a slow worker read blocks the writer. Values are copied
+across the worker boundary. Backup is a full copy. The object-store backend has
+no multi-writer CAS yet. Compression and geo/vector types are not part of 1.0.0.

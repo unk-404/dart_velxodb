@@ -11,7 +11,8 @@ sealed class Predicate {
   const Predicate();
 
   /// Value equality on [fieldId].
-  factory Predicate.eq(int fieldId, Object value) => EqPredicate(fieldId, value);
+  factory Predicate.eq(int fieldId, Object value) =>
+      EqPredicate(fieldId, value);
 
   /// `field < value`.
   factory Predicate.lt(int fieldId, Object value) =>
@@ -69,8 +70,7 @@ final class EqPredicate extends Predicate {
   final Object value;
 
   @override
-  bool test(DocView document) =>
-      readField(document, fieldId, value) == value;
+  bool test(DocView document) => readField(document, fieldId, value) == value;
 }
 
 /// A one-sided or two-sided range over [fieldId].
@@ -330,5 +330,5 @@ IndexHit? _findIndexHit(Predicate predicate, Set<int> indexed) {
 /// Exposes the chosen hit so the executor can read it without re-planning.
 IndexHit? indexHitFor(Query query, Iterable<int> indexedFields) =>
     query.where == null
-        ? null
-        : _findIndexHit(query.where!, indexedFields.toSet());
+    ? null
+    : _findIndexHit(query.where!, indexedFields.toSet());

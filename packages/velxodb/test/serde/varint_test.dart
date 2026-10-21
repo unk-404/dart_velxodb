@@ -22,8 +22,11 @@ void main() {
     test('size matches the encoded length', () {
       final buffer = Uint8List(16);
       for (final value in values) {
-        expect(VxsVarint.write(buffer, 0, value), VxsVarint.size(value),
-            reason: 'value $value');
+        expect(
+          VxsVarint.write(buffer, 0, value),
+          VxsVarint.size(value),
+          reason: 'value $value',
+        );
       }
     });
 
@@ -63,8 +66,11 @@ void main() {
 
     test('round trips', () {
       for (final value in values) {
-        expect(VxsVarint.unzigzag(VxsVarint.zigzag(value)), value,
-            reason: 'value $value');
+        expect(
+          VxsVarint.unzigzag(VxsVarint.zigzag(value)),
+          value,
+          reason: 'value $value',
+        );
       }
     });
 

@@ -101,8 +101,16 @@ extension CollectionMigration on Collection {
     final chain = <int, MigrationStep>{};
     for (final step in steps) {
       if (step.to <= step.from) {
-        throw ArgumentError('migration step ${step.from}->${step.to} '
-            'must increase the version');
+        throw ArgumentError(
+          'migration step ${step.from}->${step.to} '
+          'must increase the version',
+        );
+      }
+      if (step.from < toVersion && step.to > toVersion) {
+        throw ArgumentError(
+          'migration step ${step.from}->${step.to} overshoots target '
+          'version $toVersion',
+        );
       }
       final existing = chain[step.from];
       if (existing != null && existing.to != step.to) {

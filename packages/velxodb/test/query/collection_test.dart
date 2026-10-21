@@ -4,20 +4,19 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/velxodb.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text) => (DocBuilder(schemaId: 1)
-      ..putString(1, text)
-      ..putInt(2, text.length))
-    .finish();
+Bytes doc(String text) =>
+    (DocBuilder(schemaId: 1)
+          ..putString(1, text)
+          ..putInt(2, text.length))
+        .finish();
 
-String textOf(Bytes bytes) =>
-    DocView.parse(bytes.asUint8List()).getString(1)!;
+String textOf(Bytes bytes) => DocView.parse(bytes.asUint8List()).getString(1)!;
 
 void main() {
   late Directory root;
@@ -96,18 +95,20 @@ void main() {
       messages.deleteSync(k('abc'));
 
       final scanned = messages.scanPrefixSync(k('a'));
-      expect(
-        scanned.map((e) => String.fromCharCodes(e.key)).toList(),
-        <String>['a', 'ab'],
-      );
+      expect(scanned.map((e) => String.fromCharCodes(e.key)).toList(), <String>[
+        'a',
+        'ab',
+      ]);
       expect(textOf(scanned[1].value), 'ab2');
 
       // Everything.
       final all = messages.scanPrefixSync();
-      expect(
-        all.map((e) => String.fromCharCodes(e.key)).toList(),
-        <String>['a', 'ab', 'b', 'z'],
-      );
+      expect(all.map((e) => String.fromCharCodes(e.key)).toList(), <String>[
+        'a',
+        'ab',
+        'b',
+        'z',
+      ]);
     });
 
     test('prefix scan merges memtable and flushed segments', () async {
@@ -121,10 +122,10 @@ void main() {
       messages.deleteSync(k('k1'));
 
       final scanned = messages.scanPrefixSync(k('k'));
-      expect(
-        scanned.map((e) => String.fromCharCodes(e.key)).toList(),
-        <String>['k2', 'k3'],
-      );
+      expect(scanned.map((e) => String.fromCharCodes(e.key)).toList(), <String>[
+        'k2',
+        'k3',
+      ]);
       expect(textOf(scanned[0].value), 'v2-new');
 
       // And after reopening, segments + catalog still line up.

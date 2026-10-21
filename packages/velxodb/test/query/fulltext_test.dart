@@ -4,17 +4,18 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/velxodb.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text) => (DocBuilder(schemaId: 1)..putString(1, text)).finish();
+Bytes doc(String text) =>
+    (DocBuilder(schemaId: 1)..putString(1, text)).finish();
 
-List<String> keysOf(List<ScanEntry> entries) =>
-    <String>[for (final entry in entries) String.fromCharCodes(entry.key)];
+List<String> keysOf(List<ScanEntry> entries) => <String>[
+  for (final entry in entries) String.fromCharCodes(entry.key),
+];
 
 void main() {
   late Directory root;
@@ -35,10 +36,12 @@ void main() {
   group('tokenizers', () {
     test('word tokenizer lowercases and splits punctuation', () {
       const tokenizer = WordTokenizer();
-      expect(
-        tokenizer.tokenize('Hello, WORLD! 你好 world'),
-        <String>['hello', 'world', '你好', 'world'],
-      );
+      expect(tokenizer.tokenize('Hello, WORLD! 你好 world'), <String>[
+        'hello',
+        'world',
+        '你好',
+        'world',
+      ]);
     });
 
     test('n-gram tokenizer slides over runes and skips spaces', () {
@@ -69,10 +72,7 @@ void main() {
       expect(keysOf(collection.searchTextSync(1, '开会')), <String>['a']);
       expect(keysOf(collection.searchTextSync(1, '明天')), <String>['b']);
       // "any" matches either shared bigram; "all" requires every query bigram.
-      expect(
-        keysOf(collection.searchTextSync(1, '开会讨论')),
-        <String>['a', 'b'],
-      );
+      expect(keysOf(collection.searchTextSync(1, '开会讨论')), <String>['a', 'b']);
       expect(
         collection.searchTextSync(1, '开会讨论', mode: TextQueryMode.all),
         isEmpty,
@@ -97,10 +97,10 @@ void main() {
       collection.putSync(k('a'), doc('alpha beta'));
       collection.putSync(k('b'), doc('alpha gamma'));
 
-      expect(
-        keysOf(collection.searchTextSync(1, 'alpha beta')),
-        <String>['a', 'b'],
-      );
+      expect(keysOf(collection.searchTextSync(1, 'alpha beta')), <String>[
+        'a',
+        'b',
+      ]);
       expect(
         keysOf(
           collection.searchTextSync(1, 'alpha beta', mode: TextQueryMode.all),
@@ -130,10 +130,7 @@ void main() {
       db = VelxoDatabase.openSync(root.path);
       collection = db.collection('notes');
       expect(collection.textIndexes.containsKey(1), isTrue);
-      expect(
-        keysOf(collection.searchTextSync(1, 'persistent')),
-        <String>['a'],
-      );
+      expect(keysOf(collection.searchTextSync(1, 'persistent')), <String>['a']);
     });
 
     test('limit stops early and results are key-ordered', () {
@@ -143,8 +140,13 @@ void main() {
       }
       final limited = collection.searchTextSync(1, 'shared', limit: 2);
       expect(limited, hasLength(2));
-      expect(keysOf(collection.searchTextSync(1, 'shared')),
-          <String>['k0', 'k1', 'k2', 'k3', 'k4']);
+      expect(keysOf(collection.searchTextSync(1, 'shared')), <String>[
+        'k0',
+        'k1',
+        'k2',
+        'k3',
+        'k4',
+      ]);
     });
 
     test('rejects searching an unindexed field', () {

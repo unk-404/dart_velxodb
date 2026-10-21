@@ -85,8 +85,10 @@ void main() {
     test('both slots unreadable is corruption, not an empty database', () {
       final directory = MemoryStorageDirectory();
       final engine = StorageEngine(directory: directory)..openSync();
-      engine.putSync(k('a'), (DocBuilder(schemaId: 1)..putString(1, 'alpha'))
-          .finish());
+      engine.putSync(
+        k('a'),
+        (DocBuilder(schemaId: 1)..putString(1, 'alpha')).finish(),
+      );
       engine.flushSync();
       engine.close();
 

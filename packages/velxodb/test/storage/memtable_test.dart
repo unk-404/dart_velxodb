@@ -75,7 +75,8 @@ void main() {
       table.forEachRange(
         k('key-050'),
         k('key-052'),
-        (key, chunk, offset, length) => inclusive.add(String.fromCharCodes(key)),
+        (key, chunk, offset, length) =>
+            inclusive.add(String.fromCharCodes(key)),
         includeUpper: true,
       );
       expect(inclusive, <String>['key-050', 'key-051', 'key-052']);

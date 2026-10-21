@@ -1,19 +1,18 @@
 import 'dart:typed_data';
 
-import 'package:blit/blit.dart';
 import 'package:test/test.dart';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/storage.dart';
 
 Uint8List k(String value) => Uint8List.fromList(value.codeUnits);
 
-Bytes doc(String text) => (DocBuilder(schemaId: 1)
-      ..putString(1, text)
-      ..putInt(2, text.length))
-    .finish();
+Bytes doc(String text) =>
+    (DocBuilder(schemaId: 1)
+          ..putString(1, text)
+          ..putInt(2, text.length))
+        .finish();
 
-String textOf(Bytes bytes) =>
-    DocView.parse(bytes.asUint8List()).getString(1)!;
+String textOf(Bytes bytes) => DocView.parse(bytes.asUint8List()).getString(1)!;
 
 ObjectStoreEngine openEngine(SimulatedObjectStore store) =>
     ObjectStoreEngine(store: store, segmentCacheSize: 2);
@@ -34,23 +33,25 @@ void main() {
       expect(store.stats.puts, 3);
     });
 
-    test('flush writes one segment and one manifest, then drops WAL objects',
-        () async {
-      final store = SimulatedObjectStore();
-      final engine = openEngine(store);
-      await engine.open();
-      await engine.put(k('a'), doc('alpha'));
-      await engine.put(k('b'), doc('beta'));
-      final info = await engine.flush();
-      expect(info, isNotNull);
-      expect(await engine.get(k('a')), isNotNull);
+    test(
+      'flush writes one segment and one manifest, then drops WAL objects',
+      () async {
+        final store = SimulatedObjectStore();
+        final engine = openEngine(store);
+        await engine.open();
+        await engine.put(k('a'), doc('alpha'));
+        await engine.put(k('b'), doc('beta'));
+        final info = await engine.flush();
+        expect(info, isNotNull);
+        expect(await engine.get(k('a')), isNotNull);
 
-      final keys = store.keys();
-      expect(keys, contains('db/MANIFEST'));
-      expect(keys, contains('db/SEG-000001.seg'));
-      expect(keys.where((key) => key.startsWith('db/wal/')), isEmpty);
-      expect(engine.segments, hasLength(1));
-    });
+        final keys = store.keys();
+        expect(keys, contains('db/MANIFEST'));
+        expect(keys, contains('db/SEG-000001.seg'));
+        expect(keys.where((key) => key.startsWith('db/wal/')), isEmpty);
+        expect(engine.segments, hasLength(1));
+      },
+    );
 
     test('reopens from the manifest and fetches segments lazily', () async {
       final store = SimulatedObjectStore();

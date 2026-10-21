@@ -8,6 +8,7 @@ import '../serde/builder.dart';
 import '../serde/schema.dart';
 import '../serde/string_view.dart';
 import '../serde/view.dart';
+import '../serde/vxs.dart';
 import '../storage/engine.dart';
 import '../storage/wal.dart';
 import 'cursor.dart';
@@ -16,6 +17,34 @@ import 'index.dart';
 import 'plan.dart';
 import 'reference.dart';
 import 'types.dart';
+
+/// One dangling reference found by [Collection.validateReferences].
+final class ReferenceIssue {
+  /// Creates an issue for [key]'s [fieldId] pointing at a missing target.
+  const ReferenceIssue({
+    required this.key,
+    required this.fieldId,
+    required this.targetCollectionId,
+    required this.value,
+  });
+
+  /// Primary key of the referring document.
+  final Uint8List key;
+
+  /// Field holding the reference.
+  final int fieldId;
+
+  /// Collection the reference points into.
+  final int targetCollectionId;
+
+  /// The missing target key, as stored in the field.
+  final String value;
+
+  @override
+  String toString() =>
+      'ReferenceIssue(${String.fromCharCodes(key)}, field $fieldId -> '
+      'collection $targetCollectionId "$value")';
+}
 
 /// A named namespace of documents inside a database.
 ///
@@ -55,12 +84,18 @@ final class Collection {
 
   final CollectionCatalog? _catalog;
   final Map<int, IndexDefinition> _indexes = <int, IndexDefinition>{};
-  final Map<int, ReferenceDefinition> _references = <int, ReferenceDefinition>{};
-  final Map<int, TextIndexDefinition> _textIndexes = <int, TextIndexDefinition>{};
+  final Map<int, ReferenceDefinition> _references =
+      <int, ReferenceDefinition>{};
+  final Map<int, TextIndexDefinition> _textIndexes =
+      <int, TextIndexDefinition>{};
 
   /// Whether writes verify that referenced documents exist.
   ///
-  /// Off by default: enforcement costs one point read per reference field.
+  /// Off by default: a bulk import may write referrers before their targets,
+  /// and a reference cycle cannot be created in one pass if every insert is
+  /// checked. Deletion policies (`restrict` / `cascade`) are always enforced.
+  /// Turn this on for interactive writes, or run [validateReferences] after a
+  /// bulk load to find dangling bindings.
   bool enforceReferences = false;
 
   static final Bytes _emptyDocument = DocBuilder().finish();
@@ -89,9 +124,27 @@ final class Collection {
     final newView = DocView.parse(document.asUint8List());
     _checkReferences(newView);
     final ops = <WalOp>[WalOp.put(full, document.asUint8List())];
-    _collectIndexOps(ops, key, oldView, newView);
-    _collectTextOps(ops, key, oldView, newView);
+    _collectDerived(ops, key, oldView, newView);
     engine.applyBatchSync(ops);
+  }
+
+  /// Collects index and full-text maintenance, mapping a field whose wire type
+  /// disagrees with its declared index to a typed constraint error.
+  void _collectDerived(
+    List<WalOp> ops,
+    Uint8List key,
+    DocView? oldDocument,
+    DocView? newDocument,
+  ) {
+    try {
+      _collectIndexOps(ops, key, oldDocument, newDocument);
+      _collectTextOps(ops, key, oldDocument, newDocument);
+    } on VxsFormatException catch (error) {
+      throw VelxoConstraintException(
+        'document ${String.fromCharCodes(key)} has a field whose type does not '
+        'match a declared index: ${error.message}',
+      );
+    }
   }
 
   /// Async facade over [putSync].
@@ -100,16 +153,44 @@ final class Collection {
 
   /// Inserts or replaces several documents.
   ///
-  /// Each document is atomic on its own; batching across documents needs the
-  /// previous value of every key, so it stays a loop for now.
-  void putManySync(List<ScanEntry> entries) {
-    for (final entry in entries) {
-      putSync(entry.key, entry.value);
+  /// The batch is committed in chunks of [chunkSize] documents. Each chunk is
+  /// one WAL frame and therefore atomic; a huge import stays memory-bounded
+  /// instead of buffering the whole set. Pass a larger [chunkSize] when the
+  /// whole batch must commit as one frame.
+  void putManySync(List<ScanEntry> entries, {int chunkSize = 10000}) {
+    if (chunkSize <= 0) {
+      throw ArgumentError.value(chunkSize, 'chunkSize', 'must be positive');
+    }
+    if (entries.isEmpty) return;
+    if (engine.inTransaction) {
+      for (final entry in entries) {
+        putSync(entry.key, entry.value);
+      }
+      return;
+    }
+    for (var start = 0; start < entries.length; start += chunkSize) {
+      final end = start + chunkSize < entries.length
+          ? start + chunkSize
+          : entries.length;
+      engine.transactionSync(() {
+        for (var i = start; i < end; i++) {
+          putSync(entries[i].key, entries[i].value);
+        }
+      });
     }
   }
 
   /// Deletes [key], removing index entries and applying reference policies.
-  void deleteSync(Uint8List key) => _deleteInternal(key, <String>{}, 0);
+  ///
+  /// Outside a transaction the whole cascade commits as one WAL frame, so a
+  /// `restrict` hit anywhere in the graph leaves the database untouched.
+  void deleteSync(Uint8List key) {
+    if (engine.inTransaction) {
+      _deleteInternal(key, <String>{}, 0);
+      return;
+    }
+    engine.transactionSync(() => _deleteInternal(key, <String>{}, 0));
+  }
 
   /// Async facade over [deleteSync].
   Future<void> delete(Uint8List key) async => deleteSync(key);
@@ -125,13 +206,20 @@ final class Collection {
   }) {
     final catalog = _catalog;
     if (catalog == null) {
-      throw StateError('this collection handle has no catalog; '
-          'open it through VelxoDatabase.collection');
+      throw StateError(
+        'this collection handle has no catalog; '
+        'open it through VelxoDatabase.collection',
+      );
     }
     final targetId = catalog.collectionIdOf(targetName);
     if (targetId == null) {
-      throw VelxoNotFoundException('target collection "$targetName" does not exist');
+      throw VelxoNotFoundException(
+        'target collection "$targetName" does not exist',
+      );
     }
+    // Index first: a reference without its reverse index makes every delete of
+    // the target fail, and the catalog must never record that half-state.
+    createIndex(fieldId, VxsType.string);
     final definition = catalog.registerReference(
       id,
       fieldId,
@@ -139,60 +227,119 @@ final class Collection {
       onDelete,
     );
     _references[fieldId] = definition;
-    createIndex(fieldId, VxsType.string);
     return definition;
   }
 
   /// Creates (and backfills) a secondary index on [fieldId].
+  ///
+  /// The catalog records the index as not ready while the backfill runs, then
+  /// marks it ready. A crash in between is repaired on the next writable open,
+  /// so a half-built index can never answer a query.
   IndexDefinition createIndex(int fieldId, VxsType type) {
     final existing = _indexes[fieldId];
     if (existing != null) {
       if (existing.type != type) {
-        throw ArgumentError('field $fieldId is already indexed as '
-            '${existing.type.name}');
+        throw ArgumentError(
+          'field $fieldId is already indexed as '
+          '${existing.type.name}',
+        );
       }
-      return existing;
+      if (!existing.ready) _finishIndex(existing);
+      return _indexes[fieldId]!;
     }
     final catalog = _catalog;
     if (catalog == null) {
-      throw StateError('this collection handle has no catalog; '
-          'open it through VelxoDatabase.collection');
+      throw StateError(
+        'this collection handle has no catalog; '
+        'open it through VelxoDatabase.collection',
+      );
     }
-    final definition = catalog.registerIndex(id, fieldId, type);
+    final definition = catalog.registerIndex(id, fieldId, type, ready: false);
     _indexes[fieldId] = definition;
     _backfill(definition);
-    return definition;
+    final ready = catalog.registerIndex(id, fieldId, type);
+    _indexes[fieldId] = ready;
+    return ready;
+  }
+
+  /// Re-runs a backfill that a crash interrupted, then marks the index ready.
+  void _finishIndex(IndexDefinition definition) {
+    final catalog = _catalog;
+    if (catalog == null) return;
+    _backfill(definition);
+    _indexes[definition.fieldId] = catalog.registerIndex(
+      id,
+      definition.fieldId,
+      definition.type,
+    );
+  }
+
+  /// Re-runs backfills that an interrupted [createIndex] or
+  /// [createTextIndex] left incomplete.
+  ///
+  /// Idempotent: postings are written by key, so an overlapping entry is simply
+  /// rewritten. Returns the number of indexes repaired.
+  int repairPendingIndexes() {
+    var repaired = 0;
+    for (final definition in _indexes.values.toList()) {
+      if (definition.ready) continue;
+      _finishIndex(definition);
+      repaired++;
+    }
+    for (final definition in _textIndexes.values.toList()) {
+      if (definition.ready) continue;
+      _finishTextIndex(definition);
+      repaired++;
+    }
+    return repaired;
   }
 
   /// Looks up primary keys whose indexed [fieldId] equals [value].
   ///
   /// Stale entries (a document that changed while its index entry survived a
   /// crash) are filtered by re-reading and comparing the field, so results are
-  /// always correct even without transactional index updates.
+  /// always correct even without transactional index updates. Inside a
+  /// transaction, postings buffered by that transaction are merged in, so a
+  /// reference written and then used in the same block is seen.
   List<ScanEntry> lookupByIndexSync(int fieldId, Object value) {
     final definition = _indexes[fieldId];
     if (definition == null) {
       throw VelxoNotFoundException('no index on field $fieldId');
     }
+    if (!definition.ready) {
+      throw VelxoConflictException(
+        'index on field $fieldId is still being built; reopen the database '
+        'read-write to finish it',
+      );
+    }
     final prefix = definition.valuePrefix(value);
     final encodedLength = prefix.length - 2;
+    final upper = _prefixUpperBound(prefix);
     final cursor = buildCollectionCursor(
       engine: engine,
       fullPrefix: prefix,
       lower: prefix,
       includeLower: true,
-      upper: _prefixUpperBound(prefix),
+      upper: upper,
       includeUpper: false,
     );
-    final out = <ScanEntry>[];
+    final entries = <String, ScanEntry>{};
     while (cursor.moveNext()) {
       final raw = cursor.current.key;
       final primaryKey = Uint8List.sublistView(raw, encodedLength);
-      final document = get(primaryKey);
+      entries[String.fromCharCodes(primaryKey)] = (
+        key: primaryKey,
+        value: cursor.current.value,
+      );
+    }
+    _mergeTransactionPostings(entries, definition, prefix, upper);
+    final out = <ScanEntry>[];
+    for (final candidate in entries.values) {
+      final document = get(candidate.key);
       if (document == null) continue;
       final view = DocView.parse(document.asUint8List());
       if (definition.readValue(view) != value) continue;
-      out.add((key: primaryKey, value: document));
+      out.add((key: candidate.key, value: document));
     }
     return out;
   }
@@ -201,7 +348,8 @@ final class Collection {
   ///
   /// Bounds are encoded with the same order-preserving codec, so this is a
   /// contiguous range over the index namespace; the cursor's bounds already
-  /// enforce the range, and each hit is only re-read to return its document.
+  /// enforce the range, and every hit is re-read and compared so a stale or
+  /// buffered posting cannot surface a document outside the range.
   List<ScanEntry> lookupByIndexRangeSync(
     int fieldId, {
     Object? from,
@@ -213,6 +361,12 @@ final class Collection {
     final definition = _indexes[fieldId];
     if (definition == null) {
       throw VelxoNotFoundException('no index on field $fieldId');
+    }
+    if (!definition.ready) {
+      throw VelxoConflictException(
+        'index on field $fieldId is still being built; reopen the database '
+        'read-write to finish it',
+      );
     }
     final namespace = definition.namespacePrefix;
     Uint8List? lower;
@@ -236,25 +390,119 @@ final class Collection {
       upper: upper,
       includeUpper: true,
     );
-    final out = <ScanEntry>[];
+    final entries = <String, ScanEntry>{};
     while (cursor.moveNext()) {
       final raw = cursor.current.key;
       final encodedLength = definition.encodedValueLength(raw, 0);
       final primaryKey = Uint8List.sublistView(raw, encodedLength);
-      final document = get(primaryKey);
+      entries[String.fromCharCodes(primaryKey)] = (
+        key: primaryKey,
+        value: cursor.current.value,
+      );
+    }
+    _mergeTransactionPostings(entries, definition, lower ?? namespace, upper);
+    final out = <ScanEntry>[];
+    for (final candidate in entries.values) {
+      final document = get(candidate.key);
       if (document == null) continue;
-      out.add((key: primaryKey, value: document));
+      final actual = definition.readValue(
+        DocView.parse(document.asUint8List()),
+      );
+      if (actual == null) continue;
+      if (!_inValueRange(
+        definition,
+        actual,
+        from,
+        to,
+        includeFrom,
+        includeTo,
+      )) {
+        continue;
+      }
+      out.add((key: candidate.key, value: document));
       if (limit != null && out.length >= limit) break;
     }
     return out;
   }
 
+  /// Adds index postings buffered by the open transaction to [entries].
+  ///
+  /// [lower] is inclusive and [upper] exclusive, both full index keys.
+  void _mergeTransactionPostings(
+    Map<String, ScanEntry> entries,
+    IndexDefinition definition,
+    Uint8List lower,
+    Uint8List? upper,
+  ) {
+    final ops = engine.transactionOps;
+    if (ops == null) return;
+    for (final op in ops) {
+      final key = op.key;
+      if (key.length < lower.length) continue;
+      if (!_startsWith(key, definition.namespacePrefix)) continue;
+      if (StringView.compareRanges(key, 0, key.length, lower, 0, lower.length) <
+          0) {
+        continue;
+      }
+      if (upper != null &&
+          StringView.compareRanges(
+                key,
+                0,
+                key.length,
+                upper,
+                0,
+                upper.length,
+              ) >=
+              0) {
+        continue;
+      }
+      // `key` is a complete index key: [indexId u16][encodedValue][primaryKey].
+      final encodedLength = definition.encodedValueLength(key, 2);
+      final primaryKey = Uint8List.sublistView(key, 2 + encodedLength);
+      final id = String.fromCharCodes(primaryKey);
+      if (op.kind == WalOpKind.delete) {
+        entries.remove(id);
+      } else {
+        entries[id] = (
+          key: primaryKey,
+          value: Bytes.view(op.value!, 0, op.value!.length),
+        );
+      }
+    }
+  }
+
+  static bool _inValueRange(
+    IndexDefinition definition,
+    Object actual,
+    Object? from,
+    Object? to,
+    bool includeFrom,
+    bool includeTo,
+  ) {
+    if (from != null) {
+      final comparison = definition.compareValues(actual, from);
+      if (comparison < 0 || (comparison == 0 && !includeFrom)) return false;
+    }
+    if (to != null) {
+      final comparison = definition.compareValues(actual, to);
+      if (comparison > 0 || (comparison == 0 && !includeTo)) return false;
+    }
+    return true;
+  }
+
   /// Runs [query], using an index when one covers part of the predicate.
   ///
-  /// Key-range fields of the query are ignored on an index plan; the residual
-  /// predicate still runs, so results are identical either way.
+  /// The index narrows candidates; the residual predicate and the query's key
+  /// range/prefix are still applied, so an indexed query returns exactly the
+  /// same set as a scan. Order is the index order (value, then primary key) when
+  /// an index is used, and key order otherwise; pass a key range or paginate
+  /// with [pageSync] when you need stable key order.
   List<ScanEntry> findSync(Query query) {
-    final hit = indexHitFor(query, _indexes.keys);
+    final readyFields = <int>[
+      for (final definition in _indexes.values)
+        if (definition.ready) definition.fieldId,
+    ];
+    final hit = indexHitFor(query, readyFields);
     if (hit == null) {
       return scanSync(
         prefix: query.prefix,
@@ -266,7 +514,6 @@ final class Collection {
         limit: query.limit,
       );
     }
-    final limit = query.limit;
     final candidates = hit.isEquality
         ? lookupByIndexSync(hit.fieldId, hit.value!)
         : lookupByIndexRangeSync(
@@ -275,17 +522,63 @@ final class Collection {
             to: hit.to,
             includeFrom: hit.includeFrom,
             includeTo: hit.includeTo,
-            limit: limit,
           );
     final predicate = query.where;
-    if (predicate == null) return candidates;
+    final limit = query.limit;
     final out = <ScanEntry>[];
     for (final entry in candidates) {
-      if (!predicate.test(DocView.parse(entry.value.asUint8List()))) continue;
+      if (!_inQueryKeyRange(query, entry.key)) continue;
+      if (predicate != null &&
+          !predicate.test(DocView.parse(entry.value.asUint8List()))) {
+        continue;
+      }
       out.add(entry);
       if (limit != null && out.length >= limit) break;
     }
     return out;
+  }
+
+  /// Whether [key] (a primary key) satisfies the query's key window.
+  static bool _inQueryKeyRange(Query query, Uint8List key) {
+    final prefix = query.prefix;
+    if (prefix != null && !_startsWith(key, prefix)) return false;
+    final start = query.start;
+    if (start != null) {
+      final comparison = StringView.compareRanges(
+        key,
+        0,
+        key.length,
+        start,
+        0,
+        start.length,
+      );
+      if (comparison < 0 || (comparison == 0 && !query.includeStart)) {
+        return false;
+      }
+    }
+    final end = query.end;
+    if (end != null) {
+      final comparison = StringView.compareRanges(
+        key,
+        0,
+        key.length,
+        end,
+        0,
+        end.length,
+      );
+      if (comparison > 0 || (comparison == 0 && !query.includeEnd)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static bool _startsWith(Uint8List key, Uint8List prefix) {
+    if (key.length < prefix.length) return false;
+    for (var i = 0; i < prefix.length; i++) {
+      if (key[i] != prefix[i]) return false;
+    }
+    return true;
   }
 
   /// Async facade over [findSync].
@@ -315,10 +608,7 @@ final class Collection {
       if (where != null && !where(viewOf(entry.value))) continue;
       out.add(entry);
     }
-    return (
-      entries: out,
-      next: out.length == limit ? out.last.key : null,
-    );
+    return (entries: out, next: out.length == limit ? out.last.key : null);
   }
 
   /// Async facade over [pageSync].
@@ -327,7 +617,8 @@ final class Collection {
     Uint8List? after,
     int limit = 100,
     bool Function(DocView document)? where,
-  }) async => pageSync(prefix: prefix, after: after, limit: limit, where: where);
+  }) async =>
+      pageSync(prefix: prefix, after: after, limit: limit, where: where);
 
   /// Opens a streaming cursor over an optional prefix and key range.
   CollectionCursor cursor({
@@ -428,16 +719,40 @@ final class Collection {
     Tokenizer tokenizer = const WordTokenizer(),
   }) {
     final existing = _textIndexes[fieldId];
-    if (existing != null) return existing;
+    if (existing != null) {
+      if (!existing.ready) _finishTextIndex(existing);
+      return _textIndexes[fieldId]!;
+    }
     final catalog = _catalog;
     if (catalog == null) {
-      throw StateError('this collection handle has no catalog; '
-          'open it through VelxoDatabase.collection');
+      throw StateError(
+        'this collection handle has no catalog; '
+        'open it through VelxoDatabase.collection',
+      );
     }
-    final definition = catalog.registerTextIndex(id, fieldId, tokenizer);
+    final definition = catalog.registerTextIndex(
+      id,
+      fieldId,
+      tokenizer,
+      ready: false,
+    );
     _textIndexes[fieldId] = definition;
     _backfillText(definition);
-    return definition;
+    final ready = catalog.registerTextIndex(id, fieldId, tokenizer);
+    _textIndexes[fieldId] = ready;
+    return ready;
+  }
+
+  /// Re-runs an interrupted full-text backfill and marks the index ready.
+  void _finishTextIndex(TextIndexDefinition definition) {
+    final catalog = _catalog;
+    if (catalog == null) return;
+    _backfillText(definition);
+    _textIndexes[definition.fieldId] = catalog.registerTextIndex(
+      id,
+      definition.fieldId,
+      definition.tokenizer,
+    );
   }
 
   /// Searches the full-text index on [fieldId].
@@ -454,6 +769,12 @@ final class Collection {
     final definition = _textIndexes[fieldId];
     if (definition == null) {
       throw VelxoNotFoundException('no text index on field $fieldId');
+    }
+    if (!definition.ready) {
+      throw VelxoConflictException(
+        'text index on field $fieldId is still being built; reopen the '
+        'database read-write to finish it',
+      );
     }
     final terms = definition.tokenize(query).toSet();
     if (terms.isEmpty) return const <ScanEntry>[];
@@ -531,6 +852,25 @@ final class Collection {
         value: cursor.current.value,
       );
     }
+    // Postings buffered by an open transaction are not in the index yet.
+    final ops = engine.transactionOps;
+    if (ops != null) {
+      for (final op in ops) {
+        final key = op.key;
+        if (key.length < prefix.length || !_startsWith(key, prefix)) continue;
+        // `key` is complete: [indexId u16][term][primaryKey]; `prefix` too.
+        final primaryKey = Uint8List.sublistView(key, prefix.length);
+        final id = String.fromCharCodes(primaryKey);
+        if (op.kind == WalOpKind.delete) {
+          hits.remove(id);
+        } else {
+          hits[id] = (
+            key: primaryKey,
+            value: Bytes.view(op.value!, 0, op.value!.length),
+          );
+        }
+      }
+    }
     return hits;
   }
 
@@ -566,7 +906,8 @@ final class Collection {
     while (cursor.moveNext()) {
       final entry = cursor.current;
       final text =
-          DocView.parse(entry.value.asUint8List()).getString(definition.fieldId) ??
+          DocView.parse(entry.value.asUint8List())
+              .getString(definition.fieldId) ??
           '';
       for (final term in definition.tokenize(text).toSet()) {
         ops.add(
@@ -592,10 +933,12 @@ final class Collection {
   ) {
     if (_indexes.isEmpty) return;
     for (final definition in _indexes.values) {
-      final oldValue =
-          oldDocument == null ? null : definition.readValue(oldDocument);
-      final newValue =
-          newDocument == null ? null : definition.readValue(newDocument);
+      final oldValue = oldDocument == null
+          ? null
+          : definition.readValue(oldDocument);
+      final newValue = newDocument == null
+          ? null
+          : definition.readValue(newDocument);
       if (oldValue != null && oldValue != newValue) {
         ops.add(WalOp.delete(definition.entryKey(oldValue, primaryKey)));
       }
@@ -610,9 +953,19 @@ final class Collection {
     }
   }
 
+  /// Safety bound for one cascade: a pathological graph cannot buffer an
+  /// unbounded transaction in memory.
+  static const int maxCascadeDocuments = 100000;
+
   void _deleteInternal(Uint8List key, Set<String> visited, int depth) {
     if (depth > 32) {
       throw StateError('reference cascade exceeded depth 32');
+    }
+    if (visited.length >= maxCascadeDocuments) {
+      throw VelxoConstraintException(
+        'cascade would delete more than $maxCascadeDocuments documents; '
+        'delete in smaller batches',
+      );
     }
     if (!visited.add('$id:${String.fromCharCodes(key)}')) return;
     final full = composeKey(key);
@@ -624,15 +977,20 @@ final class Collection {
     final oldView = DocView.parse(old.asUint8List());
     _handleReferrers(key, visited, depth);
     final ops = <WalOp>[WalOp.delete(full)];
-    _collectIndexOps(ops, key, oldView, null);
-    _collectTextOps(ops, key, oldView, null);
+    _collectDerived(ops, key, oldView, null);
     engine.applyBatchSync(ops);
   }
 
   void _handleReferrers(Uint8List key, Set<String> visited, int depth) {
     final catalog = _catalog;
     if (catalog == null) return;
-    final targetKey = utf8.decode(key);
+    final String targetKey;
+    try {
+      targetKey = utf8.decode(key);
+    } on FormatException {
+      // A binary primary key can never be the target of a string reference.
+      return;
+    }
     for (final reference in catalog.referencesTo(id)) {
       final source = _collectionById(reference.sourceCollectionId);
       if (source == null) continue;
@@ -640,7 +998,7 @@ final class Collection {
       if (referrers.isEmpty) continue;
       switch (reference.onDelete) {
         case OnDelete.restrict:
-          throw StateError(
+          throw VelxoConstraintException(
             'cannot delete document: ${referrers.length} document(s) in '
             'collection ${reference.sourceCollectionId} still reference it '
             'through field ${reference.fieldId}',
@@ -665,6 +1023,41 @@ final class Collection {
     return Collection(engine, collectionId, '', catalog: catalog);
   }
 
+  /// Lists documents whose declared reference points at a missing target.
+  ///
+  /// This is the audit path for a bulk import that ran with
+  /// [enforceReferences] off: it costs one point read per reference field and
+  /// does not modify anything. Inside a transaction it sees the transaction's
+  /// own writes.
+  List<ReferenceIssue> validateReferences({int? limit}) {
+    final issues = <ReferenceIssue>[];
+    if (_references.isEmpty) return issues;
+    final cursor = this.cursor();
+    while (cursor.moveNext()) {
+      final view = DocView.parse(cursor.current.value.asUint8List());
+      for (final reference in _references.values) {
+        final value = view.getString(reference.fieldId);
+        if (value == null) continue;
+        final targetKey = Uint8List.fromList(utf8.encode(value));
+        if (engine.get(
+              composeKeyFor(reference.targetCollectionId, targetKey),
+            ) ==
+            null) {
+          issues.add(
+            ReferenceIssue(
+              key: cursor.current.key,
+              fieldId: reference.fieldId,
+              targetCollectionId: reference.targetCollectionId,
+              value: value,
+            ),
+          );
+          if (limit != null && issues.length >= limit) return issues;
+        }
+      }
+    }
+    return issues;
+  }
+
   void _checkReferences(DocView document) {
     if (!enforceReferences) return;
     for (final reference in _references.values) {
@@ -673,7 +1066,7 @@ final class Collection {
       final targetKey = Uint8List.fromList(utf8.encode(value));
       if (engine.get(composeKeyFor(reference.targetCollectionId, targetKey)) ==
           null) {
-        throw StateError(
+        throw VelxoConstraintException(
           'missing referenced document "$value" in collection '
           '${reference.targetCollectionId} (field ${reference.fieldId})',
         );
@@ -691,17 +1084,36 @@ final class Collection {
   }
 
   void _backfill(IndexDefinition definition) {
+    final ops = <WalOp>[];
+    void flush() {
+      if (ops.isEmpty) return;
+      engine.applyBatchSync(ops);
+      ops.clear();
+    }
+
     final cursor = this.cursor();
     while (cursor.moveNext()) {
       final entry = cursor.current;
       final view = DocView.parse(entry.value.asUint8List());
-      final value = definition.readValue(view);
+      final Object? value;
+      try {
+        value = definition.readValue(view);
+      } on VxsFormatException catch (error) {
+        throw VelxoConstraintException(
+          'document ${String.fromCharCodes(entry.key)} cannot be backfilled '
+          'into index ${definition.fieldId}: ${error.message}',
+        );
+      }
       if (value == null) continue;
-      engine.putSync(
-        definition.entryKey(value, entry.key),
-        _emptyDocument,
+      ops.add(
+        WalOp.put(
+          definition.entryKey(value, entry.key),
+          _emptyDocument.asUint8List(),
+        ),
       );
+      if (ops.length >= 1000) flush();
     }
+    flush();
   }
 
   /// Smallest key greater than every key with [prefix], or `null`.
