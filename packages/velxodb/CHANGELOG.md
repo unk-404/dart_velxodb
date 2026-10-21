@@ -57,4 +57,6 @@
   maintained on write/delete (read-old, then delta), backfilled when created,
   persisted in catalog v2, and lookups verify the field value to tolerate
   non-transactional crashes.
+- Index range scans (`lookupByIndexRangeSync`) and key-cursor pagination
+  (`pageSync` with `after`/`next`) that does not drift when data changes.
 - CRC-32C now uses slicing-by-16 (about 2.5x the byte-at-a-time throughput).

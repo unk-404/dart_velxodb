@@ -145,6 +145,22 @@ value = "value * 100 * 8 / 1000"
 group = "Query"
 
 [[row]]
+id = "query collection.indexRange"
+label = "Index range scan"
+note = "24 hits over 8 values"
+unit = "Kops/s"
+value = "value * 100 * 24 / 1000"
+group = "Query"
+
+[[row]]
+id = "query collection.page"
+label = "Paged walk (64 keys)"
+note = "4 pages of 16"
+unit = "Kdocs/s"
+value = "value * 100 * 64 / 1000"
+group = "Query"
+
+[[row]]
 id = "storage block.write"
 label = "Pack a block (20 docs)"
 note = "includes block CRC"

@@ -123,5 +123,22 @@ void main() {
         sink += indexed.lookupByIndexSync(2, 3).length;
       }
     });
+
+    benchmark('collection.indexRange', () {
+      for (var round = 0; round < batch; round++) {
+        sink += indexed.lookupByIndexRangeSync(2, from: 2, to: 5).length;
+      }
+    });
+
+    benchmark('collection.page', () {
+      for (var round = 0; round < batch; round++) {
+        Uint8List? token;
+        do {
+          final page = indexed.pageSync(limit: 16, after: token);
+          token = page.next;
+          sink += page.entries.length;
+        } while (token != null);
+      }
+    });
   });
 }

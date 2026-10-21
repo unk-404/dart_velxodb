@@ -140,6 +140,103 @@ final class Collection {
     return out;
   }
 
+  /// Looks up primary keys whose indexed [fieldId] lies in `[from, to)`.
+  ///
+  /// Bounds are encoded with the same order-preserving codec, so this is a
+  /// contiguous range over the index namespace. Entries are verified against
+  /// the document for the same reason [lookupByIndexSync] does it.
+  List<ScanEntry> lookupByIndexRangeSync(
+    int fieldId, {
+    Object? from,
+    Object? to,
+    bool includeFrom = true,
+    bool includeTo = false,
+    int? limit,
+  }) {
+    final definition = _indexes[fieldId];
+    if (definition == null) {
+      throw StateError('no index on field $fieldId');
+    }
+    final namespace = definition.namespacePrefix;
+    Uint8List? lower;
+    if (from != null) {
+      final prefix = definition.valuePrefix(from);
+      lower = includeFrom ? prefix : _prefixUpperBound(prefix);
+    }
+    Uint8List? upper;
+    if (to != null) {
+      final prefix = definition.valuePrefix(to);
+      upper = includeTo ? _prefixUpperBound(prefix) : prefix;
+    } else {
+      upper = _prefixUpperBound(namespace);
+    }
+
+    final cursor = buildCollectionCursor(
+      engine: engine,
+      fullPrefix: namespace,
+      lower: lower ?? namespace,
+      includeLower: true,
+      upper: upper,
+      includeUpper: true,
+    );
+    final out = <ScanEntry>[];
+    while (cursor.moveNext()) {
+      final raw = cursor.current.key;
+      final encodedLength = definition.encodedValueLength(raw, 0);
+      final primaryKey = Uint8List.sublistView(raw, encodedLength);
+      final document = get(primaryKey);
+      if (document == null) continue;
+      final value = definition.readValue(DocView.parse(document.asUint8List()));
+      if (value == null) continue;
+      if (from != null) {
+        final comparison = definition.compareValues(value, from);
+        if (comparison < 0 || (comparison == 0 && !includeFrom)) continue;
+      }
+      if (to != null) {
+        final comparison = definition.compareValues(value, to);
+        if (comparison > 0 || (comparison == 0 && !includeTo)) continue;
+      }
+      out.add((key: primaryKey, value: document));
+      if (limit != null && out.length >= limit) break;
+    }
+    return out;
+  }
+
+  /// Returns one page of entries plus the key to resume after.
+  ///
+  /// Keys are the collection's own ordering, so a page token is simply the last
+  /// key of the previous page; no offset arithmetic and no drift on writes.
+  ScanPage pageSync({
+    Uint8List? prefix,
+    Uint8List? after,
+    int limit = 100,
+    bool Function(DocView document)? where,
+  }) {
+    final cursor = this.cursor(
+      prefix: prefix,
+      start: after,
+      includeStart: after == null,
+    );
+    final out = <ScanEntry>[];
+    while (out.length < limit && cursor.moveNext()) {
+      final entry = cursor.current;
+      if (where != null && !where(viewOf(entry.value))) continue;
+      out.add(entry);
+    }
+    return (
+      entries: out,
+      next: out.length == limit ? out.last.key : null,
+    );
+  }
+
+  /// Async facade over [pageSync].
+  Future<ScanPage> page({
+    Uint8List? prefix,
+    Uint8List? after,
+    int limit = 100,
+    bool Function(DocView document)? where,
+  }) async => pageSync(prefix: prefix, after: after, limit: limit, where: where);
+
   /// Opens a streaming cursor over an optional prefix and key range.
   CollectionCursor cursor({
     Uint8List? prefix,

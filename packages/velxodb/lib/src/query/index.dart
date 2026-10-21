@@ -42,6 +42,40 @@ final class IndexDefinition {
   /// Two-byte namespace id used in the engine.
   final int indexId;
 
+  /// Two-byte namespace prefix shared by every entry of this index.
+  Uint8List get namespacePrefix =>
+      Uint8List.fromList(<int>[(indexId >> 8) & 0xFF, indexId & 0xFF]);
+
+  /// Length of the encoded value starting at [offset] in an index key.
+  ///
+  /// Integers and booleans are fixed width; strings are scanned until the
+  /// `0x00 0x00` terminator, skipping `0x00 0xFF` escapes.
+  int encodedValueLength(Uint8List bytes, int offset) {
+    switch (type) {
+      case VxsType.int32:
+      case VxsType.int64:
+        return 9;
+      case VxsType.boolean:
+        return 1;
+      case VxsType.string:
+        var position = offset;
+        while (true) {
+          final byte = bytes[position++];
+          if (byte != 0) continue;
+          final next = bytes[position++];
+          if (next == 0x00) return position - offset;
+        }
+      default:
+        throw UnsupportedError('indexing ${type.name} is not supported');
+    }
+  }
+
+  /// Compares two values of this index's type.
+  int compareValues(Object a, Object b) => switch (type) {
+    VxsType.string => (a as String).compareTo(b as String),
+    _ => (a as int).compareTo(b as int),
+  };
+
   /// Prefix shared by every entry for [value].
   Uint8List valuePrefix(Object value) {
     final encoded = encodeValue(value);
