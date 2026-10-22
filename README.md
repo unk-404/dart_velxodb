@@ -248,13 +248,17 @@ a change:
 The database processes untrusted bytes: every decoder validates lengths and
 checksums before use, and a failed decode raises `VelxoCorruptException` or
 `VxsFormatException` instead of reading out of bounds. Encryption at rest is not
-part of 1.0.0. To report a security issue, open a private security advisory on
-GitHub rather than a public issue.
+part of 1.0.0.
+
+Trust boundaries, the capability model and the planned mediated/unmediated
+storage modes are documented in [SECURITY.md](SECURITY.md). To report a security
+issue, open a private security advisory on GitHub rather than a public issue.
 
 ## Links
 
 - [Changelog](https://github.com/unk-404/dart_velxodb/blob/main/packages/velxodb/CHANGELOG.md)
 - [Versioning policy](VERSIONING.md)
+- [Security and trust boundaries](SECURITY.md)
 - [Benchmark methodology](benchmarks/README.md)
 - [API documentation](https://pub.dev/documentation/velxodb/latest/)
 

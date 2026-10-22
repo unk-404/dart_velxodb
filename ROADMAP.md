@@ -43,8 +43,9 @@ checks; `A.B.C` versioning with a journaled upgrade path; and a benchmark suite
 with seven generated cards.
 
 What is missing is coordination between nodes, lock semantics for critical
-sections, a peer protocol for nodes sharing one logical database, files as
-first-class data, and placement across several object stores.
+sections, explicit trust boundaries between nodes and storage, a peer protocol
+for nodes sharing one logical database, files as first-class data, and placement
+across several object stores.
 
 ---
 
@@ -198,6 +199,136 @@ lock-using writer is active.
 - Crash/restart: lease expiry grants the next waiter; queue state recovers.
 - Prediction accuracy and probe traffic measured; no fixed-interval polling.
 - Multi-node tests with injected latency, partition, clock skew and peer loss.
+
+---
+
+## T — Trust boundaries and tamper resistance
+
+### Two supported trust modes
+
+| Mode | Control plane | Data plane | Guarantee |
+| --- | --- | --- | --- |
+| **T1 mediated (default)** | a coordinator role (time-bounded, may be a peer) holds the commit capability; clients ingest and read | clients may write/read immutable data directly through scoped capabilities | tamper-evident history, validated commits, bounded blast radius, detectable/repairable damage |
+| **T2 unmediated (opt-in)** | no coordinator; the deployment issues scoped credentials and accepts the risk | clients may hold broader write capability by policy | append-only layout, content hashes, signed commits where keys are used, verification and repair; **no guarantee against a holder of delete/overwrite rights** |
+
+T1 is the promise to users. T2 is supported because the deployment owns its
+credentials and may choose the trade-off; it is explicit, never a silent
+fallback, and the database warns at open and in diagnostics. "Support both" does
+not mean "both are equally safe".
+
+Both modes target two threat models:
+
+- **benign bugs** — a wrong path, a retry, an accidental overwrite or delete;
+- **malicious or stolen credentials** — forged commits, rollback, fork, deletion,
+  corrupted objects.
+
+The deployment-facing summary and checklist live in [SECURITY.md](SECURITY.md).
+
+The honest boundary: integrity can be made cryptographic; availability depends
+on authorization, replication and provider-side immutability. A principal with
+`DeleteObject` on every committed prefix can destroy availability; the database
+can detect, repair from another copy and refuse to serve corrupt bytes, but it
+cannot conjure deleted bytes.
+
+### Object namespaces and capabilities
+
+| Prefix | Content | Client capability | Coordinator | GC |
+| --- | --- | --- | --- | --- |
+| `data/<hash>` | immutable segments/chunks | create-if-absent + read; never delete/overwrite | read | read |
+| `ingest/<node>/<uuid>` | uncommitted staging | write/read/delete own | read + validate | read + clean |
+| `commits/<gen>-<hash>` | signed commit records | read | append | read |
+| `head` | latest commit pointer | read | CAS | read |
+| `locks/` | leases and queue state | read | CAS | read |
+| `gc/tombstones/` | deletion markers | none | write | execute |
+
+Clients never receive delete on `data/`, `commits/`, `head` or `locks/`; they
+delete only their own uncommitted staging objects. A capability is a single key,
+single method, short TTL where the host supports it (presigned write, scoped
+bucket policy, access point). The core does not ship a provider adapter; the host
+configures IAM and the capability issuer.
+
+### Signed commit chain
+
+The two-slot manifest remains a **derived compatibility view**. The authoritative
+history is an append-only chain:
+
+```
+commit(n) = {
+  generation,
+  parentHash,
+  manifestRoot,      // Merkle root over segments/indexes/chunks
+  writerId,
+  fenceToken,
+  signature,
+}
+head = { commitHash, generation, leaseProof, signature }
+```
+
+Readers verify `head`, walk `parentHash` to a trusted checkpoint, and reject a
+forged, broken or rolled-back chain. Generations are monotonic; readers remember
+the highest they have seen, and peers gossip heads to detect forks and
+equivocation. Without the commit key a client can add staging garbage but cannot
+make it visible or rewrite history. A coordinator that is compromised is a
+different threat: key rotation, audit, and optionally threshold signatures are
+the mitigations; they are not silently assumed away.
+
+### Validation before commit
+
+Staging objects are untrusted input. Before a commit becomes visible the commit
+path parses segment headers, validates lengths/offsets/CRC/index ranges, checks
+content hashes against the Merkle root, and rejects oversized, decompression-
+bomb, duplicate-key and out-of-range inputs. Invalid objects are quarantined and
+never enter committed state. In T2 the writer performs the same validation, and
+readers still verify structure and hashes; a malicious writer with the commit key
+can commit structurally valid but semantically bad data — that is an
+authorization problem, not a corruption bug.
+
+### Deletion, GC and replication
+
+- Committed objects are never deleted by clients. GC is a privileged role that
+  mark-sweeps from signed commits with tombstones and a grace period.
+- Metadata (`head`, `commits`) is replicated across at least two members/regions;
+  chunks/segments use a replication factor or erasure coding. Anti-entropy and
+  peer exchange repair a missing or corrupt copy.
+- Backups are independent of provider versioning. Provider Object Lock/versioning
+  and MFA delete are recommended defense-in-depth: they protect availability
+  against a holder of delete rights, which the database itself cannot do.
+- Verification is on the read path (hash/signature), with quarantine and repair
+  on failure; an integrity failure is a typed error and a metric, never silent
+  substitution.
+
+### Honest guarantees
+
+| Property | T1 mediated | T2 unmediated |
+| --- | --- | --- |
+| forged commit rejected | yes | only if clients do not share the commit key; otherwise detection, not prevention |
+| invalid staged data never committed | yes (commit validates) | writer validates; readers verify, invalid data can be committed by a key holder |
+| client cannot delete committed objects | yes (capability) | depends on issued credentials |
+| rollback/fork detected | yes | yes if readers/peers verify; a shared key makes forgery indistinguishable |
+| missing/corrupt object repaired | from replicas/peers/backup | same, if a replica exists |
+| availability under full delete rights | depends on Object Lock/replicas | user responsibility |
+
+### Definition of done
+
+- Red-team suite against a simulated store that enforces capabilities: delete
+  manifest/segment/head, overwrite, forged commit, replay, fork, corrupt chunk,
+  delete lock; every case yields rejection, detection or repair, never silent
+  corruption.
+- Startup capability probe in T1: conditional write, create-only data keys,
+  canary overwrite/delete detection; refuse hardened mode with a typed error if
+  the deployment grants destructive capabilities.
+- Commit-chain conformance: signatures, parent links, generation monotonicity,
+  rollback and fork; legacy manifest is derived and marked unverified for old
+  readers.
+- Documentation and a permission matrix for hosts; no provider code in the core.
+
+### Version and gate
+
+**B / 1.4**, shipped together with M and K. The chain and capability objects are
+additive; the legacy manifest remains readable by 1.0 readers (read-only,
+unverified). T1 requires a 1.4+ reader for the tamper-evidence guarantee. T is a
+**release gate**: multi-writer, locks and the peer protocol do not ship without
+T's conformance suite passing.
 
 ---
 
@@ -667,8 +798,8 @@ format.
 | **1.1.0** | B | foundations | MVCC snapshots + reader/writer split; batched peer RPC + queries/transactions; long-lived segment builder; segment pin/deferred unmap; directory-fsync contract; process-wide writer guard; conditional object-store capability; C0/C1 read cache; covering index/range; incremental/live backup; graph-edge cleanup |
 | **1.2.0** | B | cache & sync | C2 durable write-behind; ack policies; C3 sync/reconciliation; offline; cache compression; OPFS cache; OPFS key-index compaction; Web Locks fallback |
 | **1.3.0** | B | ordered log | streams, idempotent append, per-stream sequence, change feed/cursors, subscriptions, retention; per-stream lease |
-| **1.4.0** | B | multi-writer & locks | M1 coordination lease + fence; M2 optimistic commits; manifest CAS; commit-as-segment; queue v1; K shared/exclusive locks; lease prediction/notifications; conflict policies; writer-mode marker |
-| **1.5.0** | B | peer protocol | VPP framing/session/inventory/have-want/data; relay/forward; peer fetch; lock/commit notifications; loopback conformance; no transport or discovery shipped |
+| **1.4.0** | B | multi-writer, locks, trust | M1 coordination lease + fence; M2 optimistic commits; manifest CAS; commit-as-segment; queue v1; K shared/exclusive locks; lease prediction/notifications; T trust boundaries (T1 mediated default, T2 unmediated opt-in, capability matrix, signed commit chain, commit validation, capability probes, red-team); conflict policies; writer-mode marker |
+| **1.5.0** | B | peer protocol | VPP framing/session/inventory/have-want/data; relay/forward; peer fetch; capability scopes; signed-head verification; lock/commit notifications; loopback conformance; no transport or discovery shipped |
 | **1.6.0** | B | global serialization | M3 sequencer + durable queue; group commit; fairness/backpressure/dead-letter; linearizable read; sharding; WAN chaos |
 | **1.7.0** | B | storage pools | metadata pool + chunk pool; capacity-aware placement; background migration; read routing; no DB format change |
 | **1.8.0** | B | file system | volumes; content-defined chunks; Merkle versions; hard links; diff and copy-on-write; O(1) total size; file metadata index |
@@ -680,7 +811,7 @@ format.
 ```
 1.1 foundations
   ├─► 1.2 cache/sync ──► 1.3 ordered log
-  ├─► 1.4 multi-writer + locks ──► 1.5 peer protocol ──► 1.6 global order
+  ├─► 1.4 multi-writer + locks + trust (T gates M/K) ──► 1.5 peer protocol ──► 1.6 global order
   ├─► 1.7 storage pools
   └─► 1.8 file system (uses pools/chunks; can start on one store)
 2.0 compression (independent, but must be an A release)
@@ -719,6 +850,11 @@ Explicitly out of scope:
 - NTFS/ext4/native filesystem instruction adapters.
 - A central server tier, hub, proxy or API gateway.
 
+Provider-side controls are host configuration, not adapter code: IAM/bucket
+policies, presigned capability issuance, Object Lock, versioning and MFA delete
+are documented and tested through a permission matrix, but no provider SDK or
+implementation ships in the core.
+
 The core ships capability contracts, a loopback `PeerChannel` for tests, a
 simulated store with conditional writes/latency/faults/quotas, and conformance
 kits. Integrators implement transports, stores and membership privately; no
@@ -732,6 +868,9 @@ adapter package is planned, published or supported.
 - `lock_bench`: acquire/release, shared vs exclusive, fairness, predicted
   release accuracy, probe traffic, fencing.
 - `peer_bench`: inventory exchange, have/want, relay hops, resume, throughput.
+- `trust_bench`: red-team matrix (delete/overwrite/forge/replay/fork/corrupt),
+  capability-probe cost, signature/chain verification overhead, recovery from
+  replicas, T1 vs T2 behavior.
 - `multi_writer_bench`: 3 simulated regions, 8–32 writers, invariants, p50/p99
   commit, abort rate, fairness, request counts.
 - `cache_bench`: hit ratio, local vs remote p50/p99, offline convergence, crash
@@ -769,6 +908,17 @@ adapter package is planned, published or supported.
 9. **Compression is A / 2.0.0**, because 1.0 readers cannot parse compressed
    blocks.
 10. **No adapters, no server**, in this roadmap.
+11. **Two trust modes are supported.** T1 (control-plane mediator + direct data)
+    is the default and the user-facing guarantee. T2 (no mediator) is explicit,
+    warned about, and owned by the deployment; the database still provides
+    append-only layout, hashes, signed commits where keys are used, verification
+    and repair, but not protection against destructive credentials.
+12. **Both threat models are in scope**: benign client bugs and malicious/stolen
+    credentials. Integrity is cryptographic; availability relies on
+    authorization, replication and optional provider immutability.
+13. **Provider immutability is a supported backstop**, not the primary design:
+    Object Lock/versioning, MFA delete and bucket policies are recommended and
+    documented, never required for correctness of the local format.
 
 ## Open questions
 
@@ -784,6 +934,12 @@ adapter package is planned, published or supported.
    per directory with batched ancestor updates?
 6. Whether 2.0 compression should also introduce the optional commit-log format
    for multi-writer, or keep that for 2.x.
+7. T2 key model: one shared commit key (simplest, weakest), per-writer keys with
+   reader-side acceptance, or threshold signatures for the head.
+8. Metadata replication factor and whether cross-region copies are required for
+   the T1 guarantee.
+9. Object Lock policy: which prefixes are locked, governance vs compliance mode,
+   and how GC coexists with retention.
 
 ## Non-goals
 
