@@ -23,29 +23,29 @@ void main() {
 
   final catalog = MemoryCatalog()
     ..addCollection('users', 1)
-    ..addCollection('messages', 2);
+    ..addCollection('records', 2);
   final users = Collection(engine, 1, 'users', catalog: catalog);
-  final messages = Collection(engine, 2, 'messages', catalog: catalog);
+  final records = Collection(engine, 2, 'records', catalog: catalog);
   final notes = Collection(engine, 3, 'notes', catalog: catalog);
 
-  // messages.field_2 -> users, cascade; notes.field_2 -> messages, restrict.
-  messages.createReference(2, 'users', onDelete: OnDelete.cascade);
-  notes.createReference(2, 'messages', onDelete: OnDelete.restrict);
+  // records.field_2 -> users, cascade; notes.field_2 -> records, restrict.
+  records.createReference(2, 'users', onDelete: OnDelete.cascade);
+  notes.createReference(2, 'records', onDelete: OnDelete.restrict);
 
   for (var i = 0; i <= kKeyCount; i++) {
     users.putSync(userKey(i), compactDocument());
   }
   final userKeys = <Uint8List>[for (var i = 0; i < kKeyCount; i++) userKey(i)];
 
-  // One message per user, plus the notes that pin those messages.
+  // One record per user, plus the notes that pin those records.
   for (var i = 0; i < kKeyCount; i++) {
-    messages.putSync(
-      messageKey(i),
+    records.putSync(
+      recordKey(i),
       referringDocument(String.fromCharCodes(userKeys[i])),
     );
     notes.putSync(
-      messageKey(i),
-      referringDocument(String.fromCharCodes(messageKey(i))),
+      recordKey(i),
+      referringDocument(String.fromCharCodes(recordKey(i))),
     );
   }
 
@@ -59,7 +59,7 @@ void main() {
   void rebuildCascadeTarget() {
     users.putSync(cascadeTarget, compactDocument());
     for (final child in cascadeChildren) {
-      messages.putSync(
+      records.putSync(
         child,
         referringDocument(String.fromCharCodes(cascadeTarget)),
       );
@@ -71,7 +71,7 @@ void main() {
   // Cascade must actually remove the children; verified once, not charted.
   users.deleteSync(cascadeTarget);
   for (final child in cascadeChildren) {
-    if (messages.get(child) != null) {
+    if (records.get(child) != null) {
       throw StateError('cascade left ${String.fromCharCodes(child)} behind');
     }
   }
@@ -131,8 +131,8 @@ void main() {
     benchmark('reference.put', () {
       for (var round = 0; round < kBatch; round++) {
         for (var i = 0; i < kKeyCount; i++) {
-          messages.putSync(
-            messageKey(i),
+          records.putSync(
+            recordKey(i),
             referringDocument(String.fromCharCodes(userKeys[i])),
           );
         }
@@ -143,7 +143,7 @@ void main() {
       for (var round = 0; round < kBatch; round++) {
         for (var i = 0; i < kKeyCount; i++) {
           final target = String.fromCharCodes(userKeys[i]);
-          sink += messages.lookupByIndexSync(2, target).length;
+          sink += records.lookupByIndexSync(2, target).length;
         }
       }
     });
@@ -153,7 +153,7 @@ void main() {
       for (var round = 0; round < kBatch; round++) {
         for (var i = 0; i < kKeyCount; i++) {
           try {
-            messages.deleteSync(messageKey(i));
+            records.deleteSync(recordKey(i));
           } on VelxoException {
             // restrict/constraint: the delete must be refused and rolled back.
             conflicts++;

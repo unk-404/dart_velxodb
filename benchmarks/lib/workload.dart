@@ -20,7 +20,7 @@ const int kDocsPerBlock = 20;
 /// Documents per segment in the segment benchmarks.
 const int kSegmentDocs = 64;
 
-/// Size of one encoded chat document, in bytes.
+/// Size of one encoded sample document, in bytes.
 const int kDocBytes = 130;
 
 /// Entries in the isolated memtable benchmark.
@@ -47,7 +47,7 @@ const int kCrcBytes = 1024;
 /// Out-edges per node in the graph benchmark, including the ring edge.
 const int kGraphOutDegree = 4;
 
-/// Messages that reference one deleted target in the cascade benchmark.
+/// Documents that reference one deleted target in the cascade benchmark.
 const int kCascadeChildren = 8;
 
 /// Documents imported by the open/RSS scenario at the small scale.

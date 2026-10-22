@@ -22,15 +22,15 @@ run from a `tool/` script, never from application startup.
 import 'package:velxodb_generator/velxodb_generator.dart';
 
 const spec = ModelSpec(
-  className: 'ChatMessage',
-  collectionName: 'messages',
+  className: 'Product',
+  collectionName: 'products',
   keyField: 'id',
   fields: <FieldSpec>[
     FieldSpec('id', 1, FieldKind.string),
-    FieldSpec('conversationId', 2, FieldKind.string, indexed: true),
-    FieldSpec('senderId', 3, FieldKind.string, indexed: true),
-    FieldSpec('createdAt', 4, FieldKind.int64, indexed: true),
-    FieldSpec('body', 5, FieldKind.string),
+    FieldSpec('name', 2, FieldKind.string, indexed: true),
+    FieldSpec('category', 3, FieldKind.string, indexed: true),
+    FieldSpec('updatedAt', 4, FieldKind.int64, indexed: true),
+    FieldSpec('description', 5, FieldKind.string),
   ],
 );
 

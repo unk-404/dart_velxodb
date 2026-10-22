@@ -74,7 +74,7 @@ Future<void> main(List<String> args) async {
   final inner = SimulatedObjectStore();
   final store = PagingObjectStore(inner);
   final engine = ObjectStoreEngine(store: store);
-  final doc = chatDocument();
+  final doc = sampleDocument();
   final bytes = doc.asUint8List();
   final phases = <String, ObjectStoreStats>{};
   final wall = <String, int>{};

@@ -86,7 +86,7 @@ const List<BenchRow> kRows = <BenchRow>[
   BenchRow(
     id: 'serde encode.5field',
     group: _format,
-    label: 'Encode a 130 B chat doc',
+    label: 'Encode a 130 B document',
     note: 'single-doc builder',
     unit: 'MB/s',
     ops: kBatch,

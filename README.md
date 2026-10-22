@@ -8,9 +8,7 @@
     <img src="https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge" />
   </a>
   
-  <img src="https://img.shields.io/pub/v/velxodb.svg?style=flat-square" />
-  <img src="https://img.shields.io/pub/points/velxodb?style=flat-square" />
-  <img src="https://img.shields.io/pub/likes/velxodb.svg?style=flat-square" />
+  <img src="https://img.shields.io/pub/v/velxodb.svg?style=flat-square" /> <img src="https://img.shields.io/pub/points/velxodb?style=flat-square" /> <img src="https://img.shields.io/pub/likes/velxodb.svg?style=flat-square" />
 </center>
 
 An embedded, pure-Dart document database.
@@ -41,19 +39,19 @@ import 'dart:typed_data';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/velxodb.dart';
 
-final db = VelxoDatabase.openSync('data/chat');
-final messages = db.collection('messages');
+final db = VelxoDatabase.openSync('data/catalog');
+final products = db.collection('products');
 
 final document = (DocBuilder(schemaId: 1)
-      ..putString(1, 'conv-42')
-      ..putString(3, 'u1')
-      ..putString(5, '在吗？'))
+      ..putString(1, 'sku-42')
+      ..putString(3, 'tools')
+      ..putString(5, 'Cordless drill'))
     .finish();
 
-final key = Uint8List.fromList('m1'.codeUnits);
-messages.putSync(key, document);
+final key = Uint8List.fromList('p1'.codeUnits);
+products.putSync(key, document);
 
-final view = DocView.parse(messages.get(key)!.asUint8List());
+final view = DocView.parse(products.get(key)!.asUint8List());
 print(view.getString(5)); // decoded here, not on read
 
 await db.close(flush: true);
@@ -63,18 +61,18 @@ A transaction makes several writes one frame:
 
 ```dart
 db.transactionSync(() {
-  messages.putSync(m1, edited);
-  users.putSync(u1, updatedUser);
+  products.putSync(p1, editedProduct);
+  suppliers.putSync(s1, updatedSupplier);
 });
 ```
 
 In the browser the same model is asynchronous, because OPFS is:
 
 ```dart
-final db = await VelxoWebDatabase.open(root: 'chat');
-final messages = await db.collection('messages');
-await messages.put(key, document);
-final page = await messages.page(limit: 100);
+final db = await VelxoWebDatabase.open(root: 'catalog');
+final products = await db.collection('products');
+await products.put(key, document);
+final page = await products.page(limit: 100);
 await db.close();
 ```
 
@@ -148,6 +146,9 @@ objects, deletes, batch deletes, prefix listing and absent keys.
 + [ ] Speed up indexed range queries with a covering index or a cheaper document fetch, since range is currently slower than isar.
 + [ ] Automatically clean up graph edges when their documents are deleted; `danglingEdges()` finds them today but cleanup is not implemented.
 + [ ] Keep the Web Locks API guard for tabs, and add a fallback for browsers without `navigator.locks` so more than one tab is supported (today the in-page guard is the only protection there).
+
+The versioned plan for these items, plus multi-writer object storage, cache/sync
+and compression, lives in [ROADMAP.md](ROADMAP.md).
 
 ## Benchmarks
 

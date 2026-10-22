@@ -46,18 +46,18 @@ import 'dart:typed_data';
 import 'package:velxodb/serde.dart';
 import 'package:velxodb/velxodb.dart';
 
-final db = VelxoDatabase.openSync('data/chat');
-final messages = db.collection('messages');
+final db = VelxoDatabase.openSync('data/catalog');
+final products = db.collection('products');
 
 final document = (DocBuilder(schemaId: 1)
-      ..putString(1, 'conv-42')
-      ..putString(3, 'u1')
-      ..putString(5, '在吗？'))
+      ..putString(1, 'sku-42')
+      ..putString(3, 'tools')
+      ..putString(5, 'Cordless drill'))
     .finish();
 
-final key = Uint8List.fromList('m1'.codeUnits);
-messages.putSync(key, document);
-final view = DocView.parse(messages.get(key)!.asUint8List());
+final key = Uint8List.fromList('p1'.codeUnits);
+products.putSync(key, document);
+final view = DocView.parse(products.get(key)!.asUint8List());
 print(view.getString(5)); // zero-copy read, decoded only here
 
 await db.close(flush: true);
@@ -67,19 +67,19 @@ A transaction makes several documents and their index entries one atomic frame:
 
 ```dart
 db.transactionSync(() {
-  messages.putSync(m1, edited);
-  users.putSync(u1, updatedUser);
+  products.putSync(p1, editedProduct);
+  suppliers.putSync(s1, updatedSupplier);
 });
 ```
 
 ## Quick start (browser)
 
 ```dart
-final db = await VelxoWebDatabase.open(root: 'chat');
-final messages = await db.collection('messages');
+final db = await VelxoWebDatabase.open(root: 'catalog');
+final products = await db.collection('products');
 
-await messages.put(key, document);
-final page = await messages.page(limit: 100);
+await products.put(key, document);
+final page = await products.page(limit: 100);
 await db.close();
 ```
 

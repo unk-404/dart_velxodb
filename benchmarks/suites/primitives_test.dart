@@ -16,7 +16,7 @@ import 'package:test/test.dart';
 /// Keeps results observable so the JIT/AOT cannot elide the work.
 int sink = 0;
 
-/// The 130 B chat message, as raw bytes.
+/// The 130 B sample document, as raw bytes.
 final Uint8List payload = Uint8List.fromList(
   utf8.encode(
     '在吗？今天下午三点开会别忘了带材料，会议纪要整理好了我稍后同步到群里。'

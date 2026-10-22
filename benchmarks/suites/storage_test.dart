@@ -17,7 +17,7 @@ import 'package:velxodb_benchmarks/workload.dart';
 int sink = 0;
 
 void main() {
-  final doc = chatDocument();
+  final doc = sampleDocument();
   final writer = BlockWriter(targetSize: 8 * 1024);
   for (var i = 0; i < kDocsPerBlock; i++) {
     writer.append(doc);

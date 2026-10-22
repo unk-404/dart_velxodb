@@ -36,7 +36,7 @@ const int kTxnDocs = 100;
 const int kTxns = 20;
 
 Future<void> main() async {
-  final doc = chatDocument();
+  final doc = sampleDocument();
   final report = BenchReport(tool: 'velxo-durability');
 
   for (final tier in Durability.values) {

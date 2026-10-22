@@ -17,7 +17,7 @@ import 'package:velxodb_benchmarks/workload.dart';
 int sink = 0;
 
 void main() {
-  final doc = chatDocument();
+  final doc = sampleDocument();
 
   // An engine with one flushed segment, for segment-backed point reads.
   final directory = MemoryStorageDirectory();

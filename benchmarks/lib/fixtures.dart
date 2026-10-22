@@ -15,11 +15,11 @@ import 'package:velxodb/velxodb.dart';
 // Documents
 // ---------------------------------------------------------------------------
 
-/// Writes the 130 B chat message into [builder] through the single-doc API.
+/// Writes the 130 B sample document into [builder] through the single-doc API.
 ///
-/// The same five fields in the same order as [chatDocument], so the serde and
+/// The same five fields in the same order as [sampleDocument], so the serde and
 /// storage benchmarks measure the identical payload.
-void writeChat(DocBuilder builder) {
+void writeSample(DocBuilder builder) {
   builder
     ..putString(1, '01J8Z4K2M3N4P5Q6R7S8T9V0W1')
     ..putString(2, '01J8Z4K2M3N4P5Q6R7S8T9V0W2')
@@ -28,8 +28,8 @@ void writeChat(DocBuilder builder) {
     ..putString(5, '在吗？今天下午三点开会，别忘了带材料。');
 }
 
-/// Writes the same message through the batch sink (no per-doc allocation).
-void writeChatSink(DocSink sink) {
+/// Writes the same document through the batch sink (no per-doc allocation).
+void writeSampleSink(DocSink sink) {
   sink
     ..putString(1, '01J8Z4K2M3N4P5Q6R7S8T9V0W1')
     ..putString(2, '01J8Z4K2M3N4P5Q6R7S8T9V0W2')
@@ -38,16 +38,16 @@ void writeChatSink(DocSink sink) {
     ..putString(5, '在吗？今天下午三点开会，别忘了带材料。');
 }
 
-/// A realistic 130 B chat message: id, conversation, sender, timestamp, text.
+/// A realistic 130 B sample document: id, group, owner, timestamp, note.
 ///
 /// This is the document used by the storage/engine/compare workloads.
-Bytes chatDocument() {
+Bytes sampleDocument() {
   final builder = DocBuilder(schemaId: 1, schemaVersion: 1);
-  writeChat(builder);
+  writeSample(builder);
   return builder.finish();
 }
 
-/// The smaller 3-field message used by the query layer.
+/// The smaller 3-field sample document used by the query layer.
 Bytes compactDocument() =>
     (DocBuilder(schemaId: 1)
           ..putString(1, '01J8Z4K2M3N4P5Q6R7S8T9V0W1')
@@ -92,9 +92,9 @@ Uint8List flushKey(int index) =>
 Uint8List userKey(int index) =>
     Uint8List.fromList('user-${index.toString().padLeft(3, '0')}'.codeUnits);
 
-/// `msg-0000`: documents that reference a user.
-Uint8List messageKey(int index) =>
-    Uint8List.fromList('msg-${index.toString().padLeft(4, '0')}'.codeUnits);
+/// `rec-0000`: documents that reference another record.
+Uint8List recordKey(int index) =>
+    Uint8List.fromList('rec-${index.toString().padLeft(4, '0')}'.codeUnits);
 
 /// Keys for one collection, in ascending order.
 List<Uint8List> keysFor(int count) => <Uint8List>[

@@ -18,7 +18,7 @@ int sink = 0;
 
 void main() {
   final builder = DocBuilder(schemaId: 1, schemaVersion: 1);
-  writeChat(builder);
+  writeSample(builder);
   final encoded = builder.finish();
   final view = DocView.parse(encoded.asUint8List());
   final docSink = DocSink(capacity: 1 << 16);
@@ -28,7 +28,7 @@ void main() {
       final b = DocBuilder(schemaId: 1, schemaVersion: 1);
       for (var i = 0; i < kBatch; i++) {
         b.reset();
-        writeChat(b);
+        writeSample(b);
         sink += b.finish().length;
       }
     });
@@ -37,7 +37,7 @@ void main() {
       for (var i = 0; i < kBatch; i++) {
         if (docSink.length > (1 << 12)) docSink.reset();
         docSink.beginDoc(schemaId: 1, schemaVersion: 1);
-        writeChatSink(docSink);
+        writeSampleSink(docSink);
         docSink.endDoc();
       }
       sink += docSink.length;
@@ -58,11 +58,11 @@ void main() {
       id: 1,
       version: 1,
       fields: const <VxsField>[
-        VxsField(1, 'messageId', VxsType.string),
-        VxsField(2, 'conversationId', VxsType.string),
-        VxsField(3, 'senderId', VxsType.int64),
+        VxsField(1, 'recordId', VxsType.string),
+        VxsField(2, 'groupId', VxsType.string),
+        VxsField(3, 'ownerId', VxsType.int64),
         VxsField(4, 'createdAt', VxsType.int64),
-        VxsField(5, 'text', VxsType.string),
+        VxsField(5, 'note', VxsType.string),
       ],
     );
     const projection = <int>[1, 2, 3, 4, 5];

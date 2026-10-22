@@ -39,7 +39,7 @@ Future<void> main(List<String> args) async {
       ? kOpenDocsHuge
       : kOpenDocsLarge;
 
-  final doc = chatDocument();
+  final doc = sampleDocument();
   final readKeys = <Uint8List>[
     for (var i = 0; i < kLatencyReads; i++) _keyOf(i),
   ];
